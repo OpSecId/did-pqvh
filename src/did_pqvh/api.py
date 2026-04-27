@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import secrets
 import threading
 from datetime import datetime, timezone
 from typing import Annotated, Any, Self
@@ -29,8 +28,8 @@ app = FastAPI(
             "name": "dids",
             "description": (
                 "DID WebVH-like signed history entries (SCID resources). "
-                "Create/update requests use `options.apiKey` for operation protection. "
-                "Create selects signing keys by sequential lookup of `parameters.preRotationKeys`."
+                "Create selects signing keys by sequential lookup of `parameters.preRotationKeys` "
+                "(empty list triggers a server-generated key, same as `POST /keys`)."
             ),
         },
         {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
@@ -40,7 +39,6 @@ app = FastAPI(
 # Prototype in-memory registry: ``state.id`` -> last ``CreateResponse`` (not persistent; not for production).
 _scid_store_lock = threading.Lock()
 _scid_store: dict[str, dict[str, Any]] = {}
-_scid_api_key_store: dict[str, str] = {}
 _pre_rotation_key_index: dict[str, str] = {}
 
 _key_store_lock = threading.Lock()
@@ -354,21 +352,11 @@ def _next_version_number(previous: CreateResponse) -> int:
 
 
 class AliasRequestOptions(BaseModel):
-    """Signing options for SCID create/update. Key material is always resolved from `POST /keys` resources."""
+    """Optional request bag for SCID create/update (reserved for future options)."""
 
     model_config = ConfigDict(
         extra="allow",
-        json_schema_extra={
-            "example": {
-                "apiKey": "replace-with-secret-string",
-            }
-        },
-    )
-
-    apiKey: str | None = Field(
-        default=None,
-        min_length=1,
-        description="Secret string used to authorize protected `PUT /dids/{scid}` and `DELETE /dids/{scid}` operations.",
+        json_schema_extra={"example": {}},
     )
 
 
@@ -388,9 +376,7 @@ class CreateRequest(BaseModel):
                     "witness": {"threshold": 0, "witnesses": []},
                     "watchers": [],
                 },
-                "options": {
-                    "apiKey": "replace-with-secret-string",
-                },
+                "options": {},
             },
         }
     )
@@ -406,9 +392,7 @@ class CreateRequest(BaseModel):
     options: AliasRequestOptions | None = Field(
         default=None,
         description=(
-            "For `PUT /dids/{scid}`, `apiKey` is required. "
-            "For `POST /dids`, omit or leave empty to let the server generate a URL-safe `apiKey`. "
-            "Only `apiKey` is accepted. "
+            "Optional; reserved for future use. "
             "On create, signing key is selected by sequential lookup of `parameters.preRotationKeys`; "
             "if that list is empty, the server generates an ML-DSA key (stored like `POST /keys`)."
         ),
@@ -424,23 +408,19 @@ class CreateResponse(BaseModel):
 
 
 class DidBootstrapInfo(BaseModel):
-    """Returned on `POST /dids` when the server generated an API key and/or signing key (prototype custody)."""
+    """Returned on `POST /dids` when the server generated a signing key (prototype custody)."""
 
-    apiKey: str | None = Field(
-        default=None,
-        description="Generated `options.apiKey` when the request omitted one (store for PUT/DELETE).",
+    publicKeyMultibase: str = Field(
+        ...,
+        description="Server-created signing key: `publicKeyMultibase` (`GET /keys/{...}`).",
     )
-    publicKeyMultibase: str | None = Field(
-        default=None,
-        description="When the server created a signing key, its `publicKeyMultibase` (`GET /keys/{...}`).",
+    secretKeyMultibase: str = Field(
+        ...,
+        description="Server-created signing key: multibase-encoded secret (handle like `POST /keys`).",
     )
-    secretKeyMultibase: str | None = Field(
-        default=None,
-        description="When the server created a signing key, multibase-encoded secret (handle like `POST /keys`).",
-    )
-    preRotationKey: str | None = Field(
-        default=None,
-        description="When the server created a signing key, the hash added to `parameters.preRotationKeys`.",
+    preRotationKey: str = Field(
+        ...,
+        description="Hash inserted into `parameters.preRotationKeys` for this create.",
     )
 
 
@@ -448,7 +428,7 @@ class CreateDidResponse(BaseModel):
     logEntry: CreateResponse
     bootstrap: DidBootstrapInfo | None = Field(
         default=None,
-        description="Present when the server generated an API key and/or ML-DSA signing key for this create.",
+        description="Present when the server generated an ML-DSA signing key for this create.",
     )
 
 
@@ -700,11 +680,10 @@ def scids_post(
         Body(
             openapi_examples={
                 "minimal_bootstrap": {
-                    "summary": "Empty objects (server key + API key)",
+                    "summary": "Empty objects (server-generated signing key)",
                     "description": (
-                        "Omit signing key material: server registers a new ML-DSA key, "
-                        "fills `parameters.preRotationKeys`, and generates `options.apiKey`. "
-                        "See `bootstrap` in the response."
+                        "Omit signing key material: server registers a new ML-DSA key and "
+                        "fills `parameters.preRotationKeys`. See `bootstrap` in the response."
                     ),
                     "value": {"options": {}, "parameters": {}, "state": {}},
                 },
@@ -715,13 +694,9 @@ def scids_post(
     """Create a SCID resource: sign DID entry, store under ``state.id`` (prototype in-memory registry).
 
     If ``parameters.preRotationKeys`` is empty, the server generates an ML-DSA key, stores it like
-    ``POST /keys``, and uses its ``preRotationKey`` for signing. If ``options.apiKey`` is missing
-    or empty, the server generates a URL-safe secret for ``PUT``/``DELETE``. Generated values are
-    echoed under ``bootstrap`` when applicable.
+    ``POST /keys``, and uses its ``preRotationKey`` for signing. Key material is echoed under
+    ``bootstrap`` when the server generated that key.
     """
-    api_key_supplied = bool(req.options and req.options.apiKey)
-    final_api_key = req.options.apiKey if api_key_supplied else secrets.token_urlsafe(32)
-
     key_record: KeyCreateResponse | None = None
     if not req.parameters.preRotationKeys:
         key_record = _register_random_ml_dsa_key()
@@ -729,12 +704,7 @@ def scids_post(
     else:
         eff_params = req.parameters
 
-    effective_req = req.model_copy(
-        update={
-            "parameters": eff_params,
-            "options": AliasRequestOptions(apiKey=final_api_key),
-        }
-    )
+    effective_req = req.model_copy(update={"parameters": eff_params})
 
     keypair, public_key_multibase = _keypair_from_pre_rotation_keys(
         effective_req.parameters.preRotationKeys
@@ -757,18 +727,14 @@ def scids_post(
                 detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
             )
         _scid_store[did] = record.model_dump()
-        _scid_api_key_store[did] = final_api_key
 
     bootstrap: DidBootstrapInfo | None = None
-    if (not api_key_supplied) or (key_record is not None):
-        b_kw: dict[str, str] = {}
-        if not api_key_supplied:
-            b_kw["apiKey"] = final_api_key
-        if key_record is not None:
-            b_kw["publicKeyMultibase"] = key_record.publicKeyMultibase
-            b_kw["secretKeyMultibase"] = key_record.secretKeyMultibase
-            b_kw["preRotationKey"] = key_record.preRotationKey
-        bootstrap = DidBootstrapInfo(**b_kw)
+    if key_record is not None:
+        bootstrap = DidBootstrapInfo(
+            publicKeyMultibase=key_record.publicKeyMultibase,
+            secretKeyMultibase=key_record.secretKeyMultibase,
+            preRotationKey=key_record.preRotationKey,
+        )
 
     return CreateDidResponse(logEntry=record, bootstrap=bootstrap)
 
@@ -797,37 +763,24 @@ def scids_put(
             openapi_examples={
                 "minimal_update": {
                     "summary": "Minimal update body",
-                    "description": "Use empty `state` and `parameters` objects with required `options.apiKey`.",
+                    "description": "Use empty `state` and `parameters` objects (path `scid` must match `state.id`).",
                     "value": {
                         "state": {},
                         "parameters": {},
-                        "options": {
-                            "apiKey": "replace-with-secret-string",
-                        },
                     },
                 },
             },
         ),
     ],
 ) -> CreateResponse:
-    """Update DID document/parameters: re-signs entry.
-
-    Requires ``options.apiKey``.
-    """
+    """Update DID document/parameters: re-signs entry (prototype; no separate auth layer)."""
     body_id = _did_id_from_state(req.state)
     if body_id != scid:
         raise HTTPException(
             status_code=400,
             detail=f"Path scid {scid!r} must match body state.id {body_id!r}",
         )
-    if req.options is None or not req.options.apiKey:
-        raise HTTPException(status_code=401, detail="`options.apiKey` is required for update.")
     with _scid_store_lock:
-        stored_api_key = _scid_api_key_store.get(scid)
-        if stored_api_key is None:
-            raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
-        if req.options.apiKey != stored_api_key:
-            raise HTTPException(status_code=403, detail="Invalid apiKey for this DID.")
         prev_raw = _scid_store.get(scid)
     if prev_raw is None:
         raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
@@ -848,21 +801,12 @@ def scids_put(
 
 
 @app.delete("/dids/{scid:path}", status_code=204, tags=["dids"], summary="Delete DID")
-def scids_delete(
-    scid: str,
-    apiKey: str = Query(..., min_length=1, description="Secret API key created at `POST /dids` (`options.apiKey`)."),
-) -> None:
-    """Remove SCID entry from the prototype registry."""
+def scids_delete(scid: str) -> None:
+    """Remove SCID entry from the prototype registry (no auth in this prototype)."""
     with _scid_store_lock:
         if scid not in _scid_store:
             raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
-        stored_api_key = _scid_api_key_store.get(scid)
-        if stored_api_key is None:
-            raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
-        if apiKey != stored_api_key:
-            raise HTTPException(status_code=403, detail="Invalid apiKey for this DID.")
         del _scid_store[scid]
-        del _scid_api_key_store[scid]
 
 
 @app.get("/resolve", response_model=CreateResponse, tags=["dids"])

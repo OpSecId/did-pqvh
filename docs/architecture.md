@@ -27,9 +27,8 @@ instead of:
 - API endpoints:
   - `POST /keys` -> create key resource (seed material; store keyed by ``publicKeyMultibase``)
   - `GET /keys/{publicKeyMultibase}` / `PUT` / `DELETE` -> read, update (may move to new multibase), delete
-  - `POST /dids` -> create SCID resource (requires `options.apiKey`; signing key selected by first matching hash in `parameters.preRotationKeys`; response is `{ "logEntry": ... }`)
-  - `POST /dids` -> create; empty `parameters.preRotationKeys` triggers server-generated ML-DSA key (stored like `POST /keys`); empty/missing `options.apiKey` triggers a generated URL-safe secret; optional `bootstrap` in the JSON response returns generated custody material when applicable
-  - `GET /dids/{scid}` / `GET /{scid}` (same read; root route registered last; `scid` regex-validated as `did:pqvh:` + base58 id) / `PUT /dids/{scid}` / `DELETE /dids/{scid}` -> read, update/delete protected by API key (`PUT` via `options.apiKey`, `DELETE` via `?apiKey=...`)
+  - `POST /dids` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); response is `{ "logEntry": ... }` with optional `bootstrap` when the server generated the signing key
+  - `GET /dids/{scid}` / `GET /{scid}` (same read; root route registered last; `scid` regex-validated as `did:pqvh:` + base58 id) / `PUT /dids/{scid}` / `DELETE /dids/{scid}` -> read, update, delete (prototype; no API-key layer on write/delete)
   - `GET /resolve?did={did}` -> resolve by full DID
   - `POST /credentials/issue` -> minimal W3C VC (`@context`, `type`, `issuer`, `issuanceDate`, `credentialSubject`) + `mldsa44-jcs-2024` proof
   - `POST /credentials/verify` -> verify secured VC + public key; returns unsecured credential when valid
