@@ -669,14 +669,19 @@ def scids_post(req: CreateRequest) -> CreateDidResponse:
     return CreateDidResponse(logEntry=record)
 
 
-@app.get("/dids/{scid:path}", response_model=CreateResponse, tags=["dids"], summary="Read DID")
-def scids_get(scid: str) -> CreateResponse:
-    """Read the stored signed entry for path ``scid`` (the DID string; URL-encode, e.g. ``did%3Apqvh%3A…``)."""
+def _get_scid_entry_or_404(scid: str) -> CreateResponse:
+    """Load stored signed entry for ``scid`` (full DID string used as map key)."""
     with _scid_store_lock:
         raw = _scid_store.get(scid)
     if raw is None:
         raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
     return CreateResponse.model_validate(raw)
+
+
+@app.get("/dids/{scid:path}", response_model=CreateResponse, tags=["dids"], summary="Read DID")
+def scids_get(scid: str) -> CreateResponse:
+    """Read the stored signed entry for path ``scid`` (the DID string; URL-encode, e.g. ``did%3Apqvh%3A…``)."""
+    return _get_scid_entry_or_404(scid)
 
 
 @app.put("/dids/{scid:path}", response_model=CreateResponse, tags=["dids"], summary="Update DID")
@@ -833,3 +838,19 @@ def credentials_verify(req: CredentialVerifyRequest) -> CredentialVerifyResponse
         verified=result.verified,
         credential=result.verified_document if result.verified else None,
     )
+
+
+@app.get(
+    "/{scid:path}",
+    response_model=CreateResponse,
+    tags=["dids"],
+    summary="Read DID (root path)",
+    description=(
+        "Same as `GET /dids/{scid}`: returns the stored signed entry when `scid` is the full DID. "
+        "Registered after all other routes so paths like `/health`, `/keys`, `/dids`, `/resolve`, "
+        "and `/credentials` are not captured."
+    ),
+)
+def scid_root_get(scid: str) -> CreateResponse:
+    """Root-path alias for reading a SCID entry (must be registered last)."""
+    return _get_scid_entry_or_404(scid)

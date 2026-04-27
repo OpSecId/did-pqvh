@@ -99,6 +99,7 @@ Response keys (key resources):
 
 - **`POST /dids`** — create (201); fails with **409** if that `state.id` already exists. Body must include **`options.apiKey`**. Signing key is selected by checking `parameters.preRotationKeys` in order and using the first hash that matches a key created via **`POST /keys`**. Response body wraps the DID log entry as **`{ "logEntry": { ... } }`**.
 - **`GET /dids/{scid}`** — read stored signed entry; **`{scid}`** is the DID string (e.g. percent-encode as `did%3Apqvh%3Amyid`).
+- **`GET /{scid}`** — same as above (root path alias); registered after reserved paths (`/health`, `/keys`, `/resolve`, etc.).
 - **`PUT /dids/{scid}`** — update document/parameters and re-sign; body `state.id` must match the path. Body must include **`options.apiKey`**.
 - **`DELETE /dids/{scid}?apiKey={apiKey}`** — remove (204); requires the same API key.
 - **`GET /resolve?did={did}`** — resolve by full DID (local store lookup in this prototype).
@@ -121,7 +122,7 @@ curl -s "http://127.0.0.1:8000/dids/${SCID}"
 curl -s "http://127.0.0.1:8000/resolve?did=did%3Apqvh%3AQm..."
 ```
 
-For a SCID entry created via this API, **`GET /dids/{scid}`** returns a did:webvh-style signed entry including **`versionId`**, **`versionTime`**, **`state`**, **`parameters`**, and **`proof`**.
+For a SCID entry created via this API, **`GET /dids/{scid}`** (or **`GET /{scid}`**) returns a did:webvh-style signed entry including **`versionId`**, **`versionTime`**, **`state`**, **`parameters`**, and **`proof`**.
 
 Verify a credential (`POST /credentials/verify`): body has the secured `credential` JSON (with top-level `proof`) and the issuer’s public key in one of the same two forms. Response includes `verified` and the unsecured `credential` when valid.
 
