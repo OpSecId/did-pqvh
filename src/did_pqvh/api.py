@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import secrets
 import threading
 from datetime import datetime, timezone
@@ -41,7 +42,11 @@ app = FastAPI(
         },
         {
             "name": "dids",
-            "description": "DID resolution (`GET /resolve?did=` returns JSON with top-level `didDocument` from the local store).",
+            "description": (
+                "DID resolution (`GET /resolve?did=` returns JSON with top-level `didDocument` from the local store). "
+                "When `DID_PQVH_WEBVH_HOSTNAME` is set, resolved documents merge WebVH-style `alsoKnownAs` entries "
+                "for each bound `/alias/…` (see env in README)."
+            ),
         },
         {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
         {
@@ -804,14 +809,71 @@ def _drop_aliases_for_did_locked(normalized_did: str) -> None:
         del _alias_to_did[a]
 
 
+def _webvh_hostname() -> str:
+    """Hostname fragment for synthetic ``did:webvh:…`` URIs in ``alsoKnownAs`` (optional)."""
+    return os.environ.get("DID_PQVH_WEBVH_HOSTNAME", "").strip()
+
+
+def _pqvh_scid_from_did_key(did_key: str) -> str | None:
+    """Return the SCID (method-specific id) from ``did:pqvh:<SCID>``, or ``None``."""
+    prefix = "did:pqvh:"
+    if not did_key.startswith(prefix):
+        return None
+    rest = did_key[len(prefix) :]
+    return rest if rest else None
+
+
+def _webvh_also_known_as_for_aliases(did_key: str) -> list[str]:
+    """Build ``did:webvh:{SCID}:{hostname}:alias:{alias}`` strings for aliases bound to ``did_key``."""
+    hostname = _webvh_hostname()
+    if not hostname:
+        return []
+    scid = _pqvh_scid_from_did_key(did_key)
+    if not scid:
+        return []
+    with _scid_log_lock:
+        uris = [
+            f"did:webvh:{scid}:{hostname}:alias:{alias_key}"
+            for alias_key, bound in _alias_to_did.items()
+            if bound == did_key
+        ]
+    return sorted(uris)
+
+
+def _did_document_with_webvh_also_known_as(did_key: str, state: dict[str, Any]) -> dict[str, Any]:
+    """Copy ``state`` and merge computed WebVH ``alsoKnownAs`` entries (resolve-only augmentation)."""
+    doc = dict(state)
+    extra = _webvh_also_known_as_for_aliases(did_key)
+    if not extra:
+        return doc
+    existing = doc.get("alsoKnownAs")
+    merged: list[str] = []
+    if isinstance(existing, list):
+        merged = [x for x in existing if isinstance(x, str)]
+    elif isinstance(existing, str):
+        merged = [existing]
+    for u in extra:
+        if u not in merged:
+            merged.append(u)
+    doc["alsoKnownAs"] = merged
+    return doc
+
+
 @app.get("/resolve", tags=["dids"])
 def dids_resolve(
     did: str = Query(
         ...,
-        description="Full `did:pqvh:…` or bare base58 SCID (same normalization as `GET /{scid}`).",
+        description=(
+            "Full `did:pqvh:…` or bare base58 SCID (same normalization as `GET /{scid}`). "
+            "If `DID_PQVH_WEBVH_HOSTNAME` is set, `didDocument.alsoKnownAs` lists WebVH-style DIDs for each `/alias/…` binding."
+        ),
     ),
 ) -> dict[str, Any]:
-    """Resolve DID document from the latest SCID log entry (local store only in this prototype)."""
+    """Resolve DID document from the latest SCID log entry (local store only in this prototype).
+
+    When ``DID_PQVH_WEBVH_HOSTNAME`` is set, ``alsoKnownAs`` includes one WebVH-style DID per bound
+    ``/alias/…`` handle: ``did:webvh:{SCID}:{hostname}:alias:{alias}`` (not part of the signed log).
+    """
     key = _normalize_root_scid_lookup_key(did)
     snapshot = _scid_log_snapshot(key)
     if snapshot is None:
@@ -829,7 +891,7 @@ def dids_resolve(
             status_code=500,
             detail="Latest log entry has no usable `state` map for didDocument.",
         )
-    return {"didDocument": dict(state)}
+    return {"didDocument": _did_document_with_webvh_also_known_as(key, state)}
 
 
 @app.post("/credentials/issue", response_model=CredentialIssueResponse, tags=["credentials"])

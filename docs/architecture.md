@@ -31,7 +31,7 @@ instead of:
   - `GET /{scid}` -> **NDJSON** stream (`application/x-ndjson`): one JSON signed log entry per line, oldest first (append-only history: create then each `PUT`); no bearer required
   - `PUT /{scid}` / `DELETE /{scid}` -> append updated signed entry, or delete entire log; both require **`Authorization: Bearer <access_token>`** matching create’s `access_token` (**403** if missing or invalid). Path accepts bare base58 SCID or full `did:pqvh:<SCID>`; registered last so `/health`, `/keys`, `/resolve`, `/alias/…`, `/credentials` win. Use TLS; avoid logging `Authorization` at proxies.
   - `POST /alias/{alias}` / `GET /alias/{alias}` / `DELETE /alias/{alias}` -> optional URL alias for an existing log (`POST`/`DELETE` need the bound DID’s bearer); `GET` is the same NDJSON as `GET /{scid}`; deleting the SCID removes aliases pointing at it
-  - `GET /resolve?did={did}` -> JSON `{ "didDocument": <latest log entry state> }` (full `did:pqvh:…` or bare SCID); use `GET /{scid}` for the full NDJSON log
+  - `GET /resolve?did={did}` -> JSON `{ "didDocument": <latest log entry state> }` (full `did:pqvh:…` or bare SCID); use `GET /{scid}` for the full NDJSON log. Optional env **`DID_PQVH_WEBVH_HOSTNAME`**: merge **`alsoKnownAs`** with `did:webvh:{SCID}:{hostname}:alias:{alias}` for each `/alias/…` bound to that DID (synthetic; not in the signed log)
   - `POST /credentials/issue` -> minimal W3C VC (`@context`, `type`, `issuer`, `issuanceDate`, `credentialSubject`) + `mldsa44-jcs-2024` proof
   - `POST /credentials/verify` -> verify secured VC + public key; returns unsecured credential when valid
 - Proof shape:

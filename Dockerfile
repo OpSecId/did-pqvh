@@ -3,6 +3,8 @@ FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+# Optional: WebVH-style alsoKnownAs on GET /resolve (see README).
+# ENV DID_PQVH_WEBVH_HOSTNAME=wallets.example.com
 
 WORKDIR /app
 

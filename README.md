@@ -53,6 +53,12 @@ Same as `uv run did-pqvh serve` (optional `--host`, `--port`, `--no-reload`). Un
 uv run uvicorn did_pqvh.api:app --reload
 ```
 
+**Environment (HTTP API)**
+
+| Variable | Effect |
+| -------- | ------ |
+| `DID_PQVH_WEBVH_HOSTNAME` | If non-empty, `GET /resolve` augments `didDocument.alsoKnownAs` with `did:webvh:{SCID}:{hostname}:alias:{alias}` for each alias bound to that DID (`{SCID}` is the `did:pqvh:` method-specific id; `{hostname}` is this value). Omitted or empty disables that merge. |
+
 Keys are a REST resource (prototype **in-memory** store; restart clears it). The path parameter is **`publicKeyMultibase`** (multibase `z` + base58btc of the raw ML-DSA public key from the create response). Use that string as `/keys/{publicKeyMultibase}` (encode for HTTP if your client requires it).
 
 - **`POST /keys`** — create (201); **409** if that `publicKeyMultibase` is already stored (same seed ⇒ same key).
@@ -102,7 +108,7 @@ Response keys (key resources):
 - **Aliases** — optional stable path for a SCID log: **`POST /alias/{alias}`** (201, JSON `{"alias","did"}`) with body **`{"scid":"…"}`** (bare SCID or full `did:pqvh:…`) and **`Authorization: Bearer`** for that log’s `access_token` binds the handle (stored **case-insensitively**; **409** if taken). **`GET /alias/{alias}`** streams the same **NDJSON** as **`GET /{scid}`** (no bearer). **`DELETE /alias/{alias}`** (204) removes the binding and requires the bound DID’s bearer. Deleting the SCID log (**`DELETE /{scid}`**) drops any aliases pointing at it.
 - **`PUT /{scid}`** — update document/parameters and re-sign; body `state.id` must match the path after the same SCID normalization as **`GET /{scid}`**. Requires **`Authorization: Bearer <access_token>`** from create (**403** if missing or wrong).
 - **`DELETE /{scid}`** — remove (204); same path rules as **`GET /{scid}`** and the same **`Authorization: Bearer`** requirement (**403** if missing or wrong).
-- **`GET /resolve?did={did}`** — JSON **`{ "didDocument": { … } }`**: the **`state`** map from the **latest** signed log entry for that DID. **`did`** is full **`did:pqvh:…`** or bare SCID (same normalization as **`GET /{scid}`**; local store only in this prototype). For the full append-only history, use **`GET /{scid}`** (NDJSON).
+- **`GET /resolve?did={did}`** — JSON **`{ "didDocument": { … } }`**: the **`state`** map from the **latest** signed log entry for that DID. **`did`** is full **`did:pqvh:…`** or bare SCID (same normalization as **`GET /{scid}`**; local store only in this prototype). For the full append-only history, use **`GET /{scid}`** (NDJSON). If **`DID_PQVH_WEBVH_HOSTNAME`** is set (e.g. `wallets.example.com`), the resolved document merges **`alsoKnownAs`** with one synthetic WebVH-style DID per bound alias: **`did:webvh:{SCID}:{hostname}:alias:{alias}`** (not present in the signed NDJSON log; resolve-only).
 
 Minimal create (server-generated signing key; key material lives in the **`/keys`** store and can be read with **`GET /keys/{publicKeyMultibase}`** when you know the multibase, e.g. from **`logEntry.proof.verificationMethod`**):
 
