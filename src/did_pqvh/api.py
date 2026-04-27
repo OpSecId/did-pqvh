@@ -25,12 +25,17 @@ app = FastAPI(
         {"name": "server", "description": "Server metadata and health endpoints."},
         {"name": "keys", "description": "ML-DSA keypair resources; path key is `publicKeyMultibase` (multibase `z` + base58btc)."},
         {
-            "name": "dids",
+            "name": "scids",
             "description": (
-                "DID WebVH-like signed history entries (SCID resources). "
-                "Create selects signing keys by sequential lookup of `parameters.preRotationKeys` "
-                "(empty list triggers a server-generated key, same as `POST /keys`)."
+                "SCID log resources at the API root: `POST /` creates a signed entry; "
+                "`GET` / `PUT` / `DELETE /{scid}` read, update, or delete by bare multihash SCID or full "
+                "`did:pqvh:…` path segment. Create selects signing keys by sequential lookup of "
+                "`parameters.preRotationKeys` (empty list triggers a server-generated key, same as `POST /keys`)."
             ),
+        },
+        {
+            "name": "dids",
+            "description": "DID resolution helpers (e.g. `GET /resolve?did=` for local store lookup).",
         },
         {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
     ],
@@ -782,7 +787,7 @@ def credentials_verify(req: CredentialVerifyRequest) -> CredentialVerifyResponse
     response_model=CreateDidResponse,
     response_model_exclude_none=True,
     status_code=201,
-    tags=["dids"],
+    tags=["scids"],
     summary="Create DID",
 )
 def root_post_did(
@@ -853,7 +858,7 @@ def root_post_did(
 @app.get(
     "/{scid}",
     response_model=CreateResponse,
-    tags=["dids"],
+    tags=["scids"],
     summary="Read DID",
     description=(
         "Read the stored signed entry. Path accepts a bare base58 **SCID** "
@@ -871,7 +876,7 @@ def root_get_did(scid: ScidPathSegment) -> CreateResponse:
 @app.put(
     "/{scid}",
     response_model=CreateResponse,
-    tags=["dids"],
+    tags=["scids"],
     summary="Update DID",
 )
 def root_put_did(
@@ -922,7 +927,7 @@ def root_put_did(
     return record
 
 
-@app.delete("/{scid}", status_code=204, tags=["dids"], summary="Delete DID")
+@app.delete("/{scid}", status_code=204, tags=["scids"], summary="Delete DID")
 def root_delete_did(scid: ScidPathSegment) -> None:
     """Remove SCID entry from the prototype registry (no auth in this prototype)."""
     normalized = _normalize_root_scid_lookup_key(scid)

@@ -21,7 +21,7 @@ instead of:
 
 ## Current prototype choices
 
-- OpenAPI: operations are grouped under tags **`server`** (e.g. health), **`keys`**, **`dids`**, **`credentials`**.
+- OpenAPI: operations are grouped under tags **`server`** (e.g. health), **`keys`**, **`scids`** (root SCID log CRUD), **`dids`** (`GET /resolve`), **`credentials`**.
 - Library: `dilithium-py` (`ML_DSA_44` — ML-DSA-44 parameter set)
 - Signature in `proofValue`: multibase **base64url** (`u` prefix) without padding
 - API endpoints:
