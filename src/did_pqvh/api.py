@@ -6,12 +6,13 @@ import base64
 import binascii
 import hashlib
 import json
+import secrets
 import threading
 from datetime import datetime, timezone
 from typing import Annotated, Any, Self
 
 import base58
-from fastapi import Body, FastAPI, HTTPException, Path, Query
+from fastapi import Body, FastAPI, Header, HTTPException, Path, Query, Response
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -29,9 +30,10 @@ app = FastAPI(
         {
             "name": "scids",
             "description": (
-                "SCID log resources at the API root: `POST /` appends the first signed entry; "
+                "SCID log resources at the API root: `POST /` appends the first signed entry and returns "
+                "`X-Scid-Auth-Secret` (store it for writes); "
                 "`GET /{scid}` streams **NDJSON** (one JSON log entry per line, oldest first); "
-                "`PUT /{scid}` appends an updated entry; `DELETE /{scid}` removes the whole log. "
+                "`PUT /{scid}` / `DELETE /{scid}` require that header. "
                 "Paths accept bare multihash SCID or full `did:pqvh:…`. Create selects signing keys by sequential "
                 "lookup of `parameters.preRotationKeys` (empty list triggers a server-generated key, same as `POST /keys`)."
             ),
@@ -47,10 +49,15 @@ app = FastAPI(
 # Prototype in-memory registry: ``state.id`` -> ordered list of signed log entries (not persistent; not for production).
 _scid_log_lock = threading.Lock()
 _scid_log: dict[str, list[dict[str, Any]]] = {}
+# Per-DID shared secret (returned on ``POST /`` in ``X-Scid-Auth-Secret``); required on ``PUT`` / ``DELETE``.
+_scid_secret: dict[str, str] = {}
 _pre_rotation_key_index: dict[str, str] = {}
 
 _key_store_lock = threading.Lock()
 _key_store: dict[str, dict[str, Any]] = {}
+
+# Response / request header for SCID write authentication (caller must persist after create).
+SCID_AUTH_SECRET_HEADER = "X-Scid-Auth-Secret"
 
 # Minimal DID document (https://www.w3.org/TR/did-1.1/) for default `state`.
 MINIMAL_DID_DOCUMENT: dict[str, Any] = {
@@ -80,6 +87,17 @@ ScidPathSegment = Annotated[
         description=(
             "Bare base58 SCID (32–80 chars) or full `did:pqvh:` + same, one URL path segment "
             "(encode `:` for HTTP if needed)."
+        ),
+    ),
+]
+
+ScidAuthSecretHeader = Annotated[
+    str | None,
+    Header(
+        alias=SCID_AUTH_SECRET_HEADER,
+        description=(
+            f"Per-DID secret from the `POST /` response header `{SCID_AUTH_SECRET_HEADER}`; "
+            "required for PUT and DELETE (missing or wrong value yields 403)."
         ),
     ),
 ]
@@ -709,6 +727,21 @@ def _scid_log_streaming_response(key: str, *, not_found_detail: str | None = Non
     )
 
 
+def _require_scid_auth_secret(normalized: str, secret: str | None) -> None:
+    """Raise 403 if the per-DID secret is missing or wrong (call under ``_scid_log_lock``)."""
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail="Missing SCID write secret; send the `X-Scid-Auth-Secret` header from the `POST /` response.",
+        )
+    expected = _scid_secret.get(normalized)
+    if expected is None or not secrets.compare_digest(secret, expected):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid or missing SCID write secret; send the value from the `POST /` response header.",
+        )
+
+
 @app.get("/resolve", tags=["dids"])
 def dids_resolve(
     did: str = Query(
@@ -794,8 +827,24 @@ def credentials_verify(req: CredentialVerifyRequest) -> CredentialVerifyResponse
     status_code=201,
     tags=["scids"],
     summary="Create DID",
+    responses={
+        201: {
+            "description": (
+                "Created; persist the `X-Scid-Auth-Secret` response header value for `PUT /{scid}` and `DELETE /{scid}`."
+            ),
+            "headers": {
+                "X-Scid-Auth-Secret": {
+                    "description": (
+                        "Per-DID shared secret; send the same header name and value on write operations for this DID."
+                    ),
+                    "schema": {"type": "string"},
+                },
+            },
+        },
+    },
 )
 def root_post_did(
+    response: Response,
     req: Annotated[
         CreateRequest,
         Body(
@@ -840,6 +889,7 @@ def root_post_did(
     did = record.state.get("id")
     if not isinstance(did, str) or not did:
         raise HTTPException(status_code=500, detail="Resolved state.id is missing after create.")
+    auth_secret = secrets.token_urlsafe(32)
     with _scid_log_lock:
         if did in _scid_log:
             raise HTTPException(
@@ -847,7 +897,9 @@ def root_post_did(
                 detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
             )
         _scid_log[did] = [record.model_dump()]
+        _scid_secret[did] = auth_secret
 
+    response.headers[SCID_AUTH_SECRET_HEADER] = auth_secret
     return CreateDidResponse(logEntry=record)
 
 
@@ -904,8 +956,9 @@ def root_put_did(
             },
         ),
     ],
+    scid_auth_secret: ScidAuthSecretHeader = None,
 ) -> CreateResponse:
-    """Update DID document/parameters: re-signs entry (prototype; no separate auth layer)."""
+    """Update DID document/parameters: re-signs entry; requires ``X-Scid-Auth-Secret`` from create."""
     normalized = _normalize_root_scid_lookup_key(scid)
     body_id = _did_id_from_state(req.state)
     if body_id != normalized:
@@ -915,8 +968,9 @@ def root_put_did(
         )
     with _scid_log_lock:
         rows = _scid_log.get(normalized)
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+        _require_scid_auth_secret(normalized, scid_auth_secret)
     previous = CreateResponse.model_validate(rows[-1])
     keypair = _keypair_for_put(previous)
     vm = _verification_method_for_scid_put(previous)
@@ -934,10 +988,15 @@ def root_put_did(
 
 
 @app.delete("/{scid}", status_code=204, tags=["scids"], summary="Delete DID")
-def root_delete_did(scid: ScidPathSegment) -> None:
-    """Remove SCID entry from the prototype registry (no auth in this prototype)."""
+def root_delete_did(
+    scid: ScidPathSegment,
+    scid_auth_secret: ScidAuthSecretHeader = None,
+) -> None:
+    """Remove SCID entry from the prototype registry; requires ``X-Scid-Auth-Secret`` from create."""
     normalized = _normalize_root_scid_lookup_key(scid)
     with _scid_log_lock:
         if normalized not in _scid_log:
             raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+        _require_scid_auth_secret(normalized, scid_auth_secret)
         del _scid_log[normalized]
+        _scid_secret.pop(normalized, None)
