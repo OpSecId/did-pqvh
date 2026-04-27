@@ -8,12 +8,14 @@ import hashlib
 import json
 import os
 import secrets
+import pathlib
 import threading
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Self
 
 import base58
 from fastapi import Body, FastAPI, Header, HTTPException, Path, Query
+from fastapi.responses import HTMLResponse
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -588,6 +590,20 @@ def _public_key_bytes_from_model(m: _ExactlyOnePublicKey) -> bytes:
             raise HTTPException(status_code=400, detail=f"Invalid public_key_b64u: {e}") from e
     assert m.public_key_multibase is not None
     return _multibase_decode(m.public_key_multibase)
+
+
+_LANDING_HTML_PATH = pathlib.Path(__file__).resolve().parent / "static" / "index.html"
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False, tags=["server"])
+def landing_page() -> HTMLResponse:
+    """myscid.com marketing UI: create a SCID via ``POST /`` from the browser."""
+    if _LANDING_HTML_PATH.is_file():
+        return HTMLResponse(_LANDING_HTML_PATH.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        "<!DOCTYPE html><html><body><h1>myscid.com</h1><p>Landing page asset missing.</p></body></html>",
+        status_code=500,
+    )
 
 
 @app.get("/health", tags=["server"])

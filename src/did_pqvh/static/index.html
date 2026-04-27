@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>myscid.com — Create a SCID</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,600;0,9..144,700;1,9..144,500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f4f0e8;
+      --ink: #1a2421;
+      --muted: #5c6b66;
+      --accent: #0d5c4d;
+      --accent-hot: #0a4a3e;
+      --card: #fffdf8;
+      --border: #d9d0c4;
+      --err: #8b2c2c;
+      --ok: #2d5a27;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "DM Sans", system-ui, sans-serif;
+      font-optical-sizing: auto;
+      background: var(--bg);
+      color: var(--ink);
+      background-image:
+        radial-gradient(ellipse 120% 80% at 100% -20%, rgba(13, 92, 77, 0.08), transparent),
+        radial-gradient(ellipse 80% 50% at -10% 110%, rgba(26, 36, 33, 0.05), transparent);
+    }
+    .wrap {
+      max-width: 42rem;
+      margin: 0 auto;
+      padding: clamp(1.5rem, 4vw, 3rem) 1.25rem 4rem;
+    }
+    header {
+      margin-bottom: 2.5rem;
+    }
+    .mark {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: clamp(2rem, 6vw, 2.75rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--accent);
+      line-height: 1.1;
+    }
+    .mark span { color: var(--ink); }
+    .tag {
+      margin: 0.75rem 0 0;
+      font-size: 1.05rem;
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 36ch;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem 1.5rem 1.25rem;
+      box-shadow: 0 12px 40px rgba(26, 36, 33, 0.06);
+    }
+    p.lead {
+      margin: 0 0 1.25rem;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    button.primary {
+      appearance: none;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 1rem;
+      padding: 0.85rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #f8faf9;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    button.primary:hover:not(:disabled) {
+      background: var(--accent-hot);
+    }
+    button.primary:active:not(:disabled) { transform: scale(0.99); }
+    button.primary:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .foot {
+      margin-top: 1rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .foot a { color: var(--accent); }
+    #out {
+      margin-top: 1.5rem;
+      display: none;
+    }
+    #out.visible { display: block; }
+    #out h2 {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: 1.15rem;
+      margin: 0 0 0.75rem;
+      color: var(--ok);
+    }
+    .field {
+      margin-bottom: 1rem;
+    }
+    .field label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    .field code, .field textarea {
+      display: block;
+      width: 100%;
+      font-size: 0.85rem;
+      padding: 0.6rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #faf8f4;
+      word-break: break-all;
+      font-family: ui-monospace, "Cascadia Code", monospace;
+    }
+    .field textarea {
+      min-height: 4.5rem;
+      resize: vertical;
+    }
+    .row {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button.secondary {
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #fff;
+      cursor: pointer;
+      color: var(--ink);
+    }
+    button.secondary:hover { background: #f0ebe3; }
+    #err {
+      display: none;
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      background: #fdeeee;
+      color: var(--err);
+      font-size: 0.9rem;
+    }
+    #err.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="mark">myscid<span>.com</span></p>
+      <p class="tag">Issue a <strong>did:pqvh</strong> SCID in one step — server-held signing key, append-only log, bearer token for updates.</p>
+    </header>
+
+    <div class="card">
+      <p class="lead">
+        This calls <code>POST /</code> on this host with an empty body shape (server generates an ML-DSA key). Copy your <strong>access token</strong> immediately; you need it for <code>PUT</code> / <code>DELETE</code>.
+      </p>
+      <button type="button" class="primary" id="btn">Create SCID</button>
+      <p class="foot">API reference: <a href="/docs">OpenAPI docs</a> · raw log: <code>GET /{scid}</code> (NDJSON)</p>
+    </div>
+
+    <p id="err" role="alert"></p>
+
+    <div id="out">
+      <h2>SCID created</h2>
+      <div class="field">
+        <label for="did">DID</label>
+        <code id="did"></code>
+      </div>
+      <div class="field">
+        <label for="tok">Access token (Bearer)</label>
+        <textarea id="tok" readonly spellcheck="false"></textarea>
+        <div class="row" style="margin-top:0.5rem">
+          <button type="button" class="secondary" id="copy">Copy token</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const btn = document.getElementById("btn");
+    const err = document.getElementById("err");
+    const out = document.getElementById("out");
+    const didEl = document.getElementById("did");
+    const tokEl = document.getElementById("tok");
+    const copyBtn = document.getElementById("copy");
+
+    function showErr(msg) {
+      err.textContent = msg;
+      err.classList.add("visible");
+    }
+    function hideErr() {
+      err.classList.remove("visible");
+      err.textContent = "";
+    }
+
+    btn.addEventListener("click", async () => {
+      hideErr();
+      out.classList.remove("visible");
+      btn.disabled = true;
+      btn.textContent = "Creating…";
+      try {
+        const r = await fetch("/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ options: {}, parameters: {}, state: {} }),
+        });
+        const text = await r.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = null; }
+        if (!r.ok) {
+          const detail = data && data.detail != null
+            ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))
+            : text.slice(0, 200) || r.statusText;
+          throw new Error(detail || "Request failed");
+        }
+        if (!data || !data.logEntry || !data.access_token) {
+          throw new Error("Unexpected response shape");
+        }
+        const did = data.logEntry.state && data.logEntry.state.id;
+        if (!did) throw new Error("Missing DID in response");
+        didEl.textContent = did;
+        tokEl.value = data.access_token;
+        out.classList.add("visible");
+      } catch (e) {
+        showErr(e.message || String(e));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Create SCID";
+      }
+    });
+
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(tokEl.value);
+        copyBtn.textContent = "Copied";
+        setTimeout(() => { copyBtn.textContent = "Copy token"; }, 2000);
+      } catch {
+        tokEl.select();
+        document.execCommand("copy");
+        copyBtn.textContent = "Copied";
+        setTimeout(() => { copyBtn.textContent = "Copy token"; }, 2000);
+      }
+    });
+  </script>
+</body>
+</html>

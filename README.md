@@ -53,6 +53,8 @@ Same as `uv run did-pqvh serve` (optional `--host`, `--port`, `--no-reload`). Un
 uv run uvicorn did_pqvh.api:app --reload
 ```
 
+**Landing UI:** open **`GET /`** in a browser for the **myscid.com** page (creates a SCID with `POST /` from the client).
+
 **Environment (HTTP API)**
 
 | Variable | Effect |
