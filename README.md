@@ -101,7 +101,7 @@ Response keys (key resources):
 - **`GET /{scid}`** — **NDJSON** stream (`Content-Type: application/x-ndjson`): one compact JSON **log entry** per line, **oldest first** (create, then each `PUT`). **`{scid}`** may be the **bare base58 SCID** or full **`did:pqvh:`** + that string (one path segment; percent-encode colons if needed). Registered after reserved paths (`/health`, `/keys`, `/resolve`, `/credentials`, etc.). Read does **not** require **`X-Scid-Auth-Secret`**.
 - **`PUT /{scid}`** — update document/parameters and re-sign; body `state.id` must match the path after the same SCID normalization as **`GET /{scid}`**. Requires header **`X-Scid-Auth-Secret`** matching the value returned on create (**403** if missing or wrong).
 - **`DELETE /{scid}`** — remove (204); same path rules as **`GET /{scid}`** and the same **`X-Scid-Auth-Secret`** requirement (**403** if missing or wrong).
-- **`GET /resolve?did={did}`** — same **NDJSON** log stream as **`GET /{scid}`**; **`did`** is full **`did:pqvh:…`** or bare SCID (local store only in this prototype).
+- **`GET /resolve?did={did}`** — JSON **`{ "didDocument": { … } }`**: the **`state`** map from the **latest** signed log entry for that DID. **`did`** is full **`did:pqvh:…`** or bare SCID (same normalization as **`GET /{scid}`**; local store only in this prototype). For the full append-only history, use **`GET /{scid}`** (NDJSON).
 
 Minimal create (server-generated signing key; key material lives in the **`/keys`** store and can be read with **`GET /keys/{publicKeyMultibase}`** when you know the multibase, e.g. from **`logEntry.proof.verificationMethod`**):
 
@@ -129,6 +129,7 @@ curl -s "http://127.0.0.1:8000/${SCID}"
 
 ```bash
 curl -s "http://127.0.0.1:8000/resolve?did=did%3Apqvh%3AQm..."
+# → {"didDocument":{"@context":[...],"id":"did:pqvh:…", ...}}
 ```
 
 Each NDJSON line is a did:webvh-style signed log entry object with **`versionId`**, **`versionTime`**, **`state`**, **`parameters`**, and **`proof`**.

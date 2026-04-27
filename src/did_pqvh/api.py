@@ -40,7 +40,7 @@ app = FastAPI(
         },
         {
             "name": "dids",
-            "description": "DID resolution helpers (e.g. `GET /resolve?did=` for local store lookup).",
+            "description": "DID resolution (`GET /resolve?did=` returns JSON with top-level `didDocument` from the local store).",
         },
         {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
     ],
@@ -748,16 +748,26 @@ def dids_resolve(
         ...,
         description="Full `did:pqvh:…` or bare base58 SCID (same normalization as `GET /{scid}`).",
     ),
-) -> StreamingResponse:
-    """Resolve DID log by `did` query (local store); same NDJSON body as ``GET /{scid}``."""
+) -> dict[str, Any]:
+    """Resolve DID document from the latest SCID log entry (local store only in this prototype)."""
     key = _normalize_root_scid_lookup_key(did)
-    return _scid_log_streaming_response(
-        key,
-        not_found_detail=(
-            f"DID not found in local store: {key!r}. "
-            "Public network resolution is not implemented in this prototype."
-        ),
-    )
+    snapshot = _scid_log_snapshot(key)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"DID not found in local store: {key!r}. "
+                "Public network resolution is not implemented in this prototype."
+            ),
+        )
+    last = snapshot[-1]
+    state = last.get("state")
+    if not isinstance(state, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="Latest log entry has no usable `state` map for didDocument.",
+        )
+    return {"didDocument": dict(state)}
 
 
 @app.post("/credentials/issue", response_model=CredentialIssueResponse, tags=["credentials"])
