@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 did-pqvh = "did_pqvh.cli:main"
+serve = "did_pqvh.cli:serve_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -17,9 +17,36 @@ def _read_bytes(path: Path) -> bytes:
     return path.read_bytes()
 
 
+def _add_serve_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+    p.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Disable autoreload (reload is on by default)",
+    )
+
+
+def _run_serve(*, host: str, port: int, reload: bool) -> None:
+    import uvicorn
+
+    uvicorn.run("did_pqvh.api:app", host=host, port=port, reload=reload)
+
+
+def serve_main() -> None:
+    """Console entrypoint for ``uv run serve`` (see ``[project.scripts]``)."""
+    parser = argparse.ArgumentParser(prog="serve")
+    _add_serve_args(parser)
+    args = parser.parse_args()
+    _run_serve(host=args.host, port=args.port, reload=not args.no_reload)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="did-pqvh")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    serve_cmd = sub.add_parser("serve", help="Run the HTTP API (FastAPI + uvicorn)")
+    _add_serve_args(serve_cmd)
 
     sign_cmd = sub.add_parser("sign")
     sign_cmd.add_argument("--in", dest="payload", required=True, type=Path)
@@ -33,6 +60,10 @@ def main() -> None:
     verify_cmd.add_argument("--public-key", required=True, type=Path)
 
     args = parser.parse_args()
+
+    if args.cmd == "serve":
+        _run_serve(host=args.host, port=args.port, reload=not args.no_reload)
+        return
 
     if args.cmd == "sign":
         payload = _read_json(args.payload)

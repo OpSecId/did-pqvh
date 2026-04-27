@@ -41,7 +41,13 @@ Verify proof:
 uv run did-pqvh verify --in payload.json --proof proof.json --public-key public.key
 ```
 
-Run API server:
+Run API server (short form):
+
+```bash
+uv run serve
+```
+
+Same as `uv run did-pqvh serve` (optional `--host`, `--port`, `--no-reload`). Under the hood this runs uvicorn with reload on by default. Equivalent manual invocation:
 
 ```bash
 uv run uvicorn did_pqvh.api:app --reload
