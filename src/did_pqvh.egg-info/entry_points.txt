@@ -1,2 +1,3 @@
 [console_scripts]
 did-pqvh = did_pqvh.cli:main
+serve = did_pqvh.cli:serve_main

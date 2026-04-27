@@ -10,6 +10,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Optional: Askar SQLite per SCID (see README); mount a volume on DID_PQVH_WALLET_DIR.
 # ENV DID_PQVH_WALLET_DIR=/wallets
 # ENV DID_PQVH_ASKAR_PASS_KEY=<raw key from Store.generate_raw_key()>
+# Optional: stable HS256 signing key for POST / access_token JWTs (recommended in production).
+# ENV DID_PQVH_ACCESS_TOKEN_SECRET=<long random UTF-8 string>
 
 WORKDIR /app
 

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 import pathlib
 import threading
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ import base58
 from fastapi import Body, FastAPI, Header, HTTPException, Path, Query
 from fastapi.responses import HTMLResponse
 from starlette.responses import StreamingResponse
+import jwt
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .canonical import canonicalize_json
@@ -82,8 +84,9 @@ app = FastAPI(
 # Prototype in-memory registry: ``state.id`` -> ordered list of signed log entries (not persistent; not for production).
 _scid_log_lock = threading.Lock()
 _scid_log: dict[str, list[dict[str, Any]]] = {}
-# Per-DID bearer token (returned as ``access_token`` on ``POST /``); required on ``PUT`` / ``DELETE`` via Authorization.
-_scid_secret: dict[str, str] = {}
+# HS256 JWT ``access_token`` from ``POST /``; ``PUT`` / ``DELETE`` verify signature + ``sub`` (no server-side token table).
+_ACCESS_TOKEN_TYP = "pqvh_scid_write"
+_runtime_jwt_signing_secret: str | None = None
 # Human-friendly alias (lowercase key) -> full ``did:pqvh:…`` log key (same lock as ``_scid_log``).
 # Not populated by HTTP in this revision; reserved for operator wiring / future registration APIs.
 _alias_to_did: dict[str, str] = {}
@@ -136,7 +139,7 @@ AuthorizationBearerHeader = Annotated[
     str | None,
     Header(
         alias="Authorization",
-        description="`Bearer <access_token>` where `access_token` is from the `POST /` JSON body.",
+        description="`Bearer <jwt>` where `<jwt>` is the HS256 `access_token` from the `POST /` JSON body.",
     ),
 ]
 
@@ -512,7 +515,10 @@ class CreateDidResponse(BaseModel):
     logEntry: CreateResponse
     access_token: str = Field(
         ...,
-        description="Opaque bearer for this DID; send on PUT/DELETE as `Authorization: Bearer <access_token>`.",
+        description=(
+            "HS256 JWT for SCID writes (`sub` = full `did:pqvh:…`, `typ` = `pqvh_scid_write`); "
+            "send on PUT/DELETE as `Authorization: Bearer <access_token>`."
+        ),
     )
     token_type: Literal["Bearer"] = Field(
         default="Bearer",
@@ -774,7 +780,7 @@ def _scid_log_snapshot(key: str) -> list[dict[str, Any]] | None:
             scid = _pqvh_scid_from_did_key(key)
             if not scid:
                 return None
-            rows, _ = wallet_askar.read_wallet_sync(scid)
+            rows = wallet_askar.read_wallet_sync(scid)
             if not rows:
                 return None
             return [dict(r) for r in rows]
@@ -813,6 +819,68 @@ def _bearer_token_from_authorization(authorization: str | None) -> str | None:
     return token or None
 
 
+def _access_token_signing_key() -> bytes:
+    """HS256 key: ``DID_PQVH_ACCESS_TOKEN_SECRET`` (UTF-8), else ephemeral per process (restart invalidates tokens)."""
+    global _runtime_jwt_signing_secret
+    env = os.environ.get("DID_PQVH_ACCESS_TOKEN_SECRET", "").strip()
+    if env:
+        return env.encode("utf-8")
+    if _runtime_jwt_signing_secret is None:
+        _runtime_jwt_signing_secret = secrets.token_hex(32)
+    return _runtime_jwt_signing_secret.encode("ascii")
+
+
+def _access_token_ttl_seconds() -> int:
+    raw = os.environ.get("DID_PQVH_ACCESS_TOKEN_TTL_SECONDS", "").strip()
+    if not raw:
+        return 90 * 24 * 3600
+    try:
+        n = int(raw)
+    except ValueError:
+        return 90 * 24 * 3600
+    return max(60, min(n, 365 * 24 * 3600))
+
+
+def _mint_scid_access_token(did: str) -> str:
+    now = int(time.time())
+    ttl = _access_token_ttl_seconds()
+    payload = {"sub": did, "typ": _ACCESS_TOKEN_TYP, "iat": now, "exp": now + ttl}
+    return jwt.encode(payload, _access_token_signing_key(), algorithm="HS256")
+
+
+def _require_scid_bearer_token(normalized: str, token: str | None) -> None:
+    """Raise 403 unless ``token`` is a valid HS256 JWT for ``normalized`` (``sub`` + ``typ``)."""
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Missing bearer token; send `Authorization: Bearer <jwt>` using `access_token` from `POST /`."
+            ),
+        )
+    try:
+        payload = jwt.decode(
+            token,
+            _access_token_signing_key(),
+            algorithms=["HS256"],
+            options={"require": ["sub", "exp", "iat"]},
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=403,
+            detail="Access token expired; create a new SCID or obtain a fresh token if the server adds renewal.",
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid access token; use `access_token` from the `POST /` response.",
+        )
+    if payload.get("sub") != normalized or payload.get("typ") != _ACCESS_TOKEN_TYP:
+        raise HTTPException(
+            status_code=403,
+            detail="Access token is not valid for this DID.",
+        )
+
+
 def _drop_aliases_for_did_locked(normalized_did: str) -> None:
     """Remove every alias pointing at ``normalized_did`` (call under ``_scid_log_lock``)."""
     stale = [a for a, did in _alias_to_did.items() if did == normalized_did]
@@ -832,32 +900,6 @@ def _pqvh_scid_from_did_key(did_key: str) -> str | None:
         return None
     rest = did_key[len(prefix) :]
     return rest if rest else None
-
-
-def _access_token_for_did_locked(normalized: str) -> str | None:
-    """Return stored bearer for ``normalized`` DID (call under ``_scid_log_lock``)."""
-    if wallet_askar.wallet_dir() is not None:
-        scid = _pqvh_scid_from_did_key(normalized)
-        if not scid:
-            return None
-        _, tok = wallet_askar.read_wallet_sync(scid)
-        return tok
-    return _scid_secret.get(normalized)
-
-
-def _require_scid_bearer_token(normalized: str, token: str | None) -> None:
-    """Raise 403 if the per-DID bearer is missing or wrong (call under ``_scid_log_lock``)."""
-    if not token:
-        raise HTTPException(
-            status_code=403,
-            detail="Missing bearer token; send `Authorization: Bearer <access_token>` using `access_token` from `POST /`.",
-        )
-    expected = _access_token_for_did_locked(normalized)
-    if expected is None or not secrets.compare_digest(token, expected):
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid or missing bearer token; use `access_token` from the `POST /` response.",
-        )
 
 
 def _webvh_also_known_as_for_aliases(did_key: str) -> list[str]:
@@ -1044,7 +1086,7 @@ def root_post_did(
     did = record.state.get("id")
     if not isinstance(did, str) or not did:
         raise HTTPException(status_code=500, detail="Resolved state.id is missing after create.")
-    auth_secret = secrets.token_urlsafe(32)
+    access_jwt = _mint_scid_access_token(did)
     with _scid_log_lock:
         if wallet_askar.wallet_dir() is not None:
             scid = _pqvh_scid_from_did_key(did)
@@ -1058,7 +1100,6 @@ def root_post_did(
             wallet_askar.write_wallet_sync(
                 scid,
                 [record.model_dump()],
-                auth_secret,
                 provision=True,
             )
         else:
@@ -1068,9 +1109,8 @@ def root_post_did(
                     detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
                 )
             _scid_log[did] = [record.model_dump()]
-            _scid_secret[did] = auth_secret
 
-    return CreateDidResponse(logEntry=record, access_token=auth_secret, token_type="Bearer")
+    return CreateDidResponse(logEntry=record, access_token=access_jwt, token_type="Bearer")
 
 
 @app.get(
@@ -1196,7 +1236,7 @@ def root_put_did(
             scid = _pqvh_scid_from_did_key(normalized)
             if not scid:
                 raise HTTPException(status_code=400, detail="Path must resolve to a did:pqvh DID.")
-            rows, _ = wallet_askar.read_wallet_sync(scid)
+            rows = wallet_askar.read_wallet_sync(scid)
             if not rows:
                 raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
         else:
@@ -1218,11 +1258,11 @@ def root_put_did(
             scid = _pqvh_scid_from_did_key(normalized)
             if not scid:
                 raise HTTPException(status_code=400, detail="Path must resolve to a did:pqvh DID.")
-            rows, tok = wallet_askar.read_wallet_sync(scid)
+            rows = wallet_askar.read_wallet_sync(scid)
             if not rows:
                 raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
             rows.append(record.model_dump())
-            wallet_askar.write_wallet_sync(scid, rows, tok, provision=False)
+            wallet_askar.write_wallet_sync(scid, rows, provision=False)
         else:
             if normalized not in _scid_log:
                 raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
@@ -1243,7 +1283,7 @@ def root_delete_did(
             scid = _pqvh_scid_from_did_key(normalized)
             if not scid:
                 raise HTTPException(status_code=400, detail="Path must resolve to a did:pqvh DID.")
-            rows, _ = wallet_askar.read_wallet_sync(scid)
+            rows = wallet_askar.read_wallet_sync(scid)
             if not rows:
                 raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
             _require_scid_bearer_token(normalized, bearer)
@@ -1253,5 +1293,4 @@ def root_delete_did(
                 raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
             _require_scid_bearer_token(normalized, bearer)
             del _scid_log[normalized]
-            _scid_secret.pop(normalized, None)
         _drop_aliases_for_did_locked(normalized)

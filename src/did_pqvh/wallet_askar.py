@@ -13,6 +13,7 @@ from aries_askar.error import AskarError
 # Askar entry names (single default profile per file).
 _CAT = "did_pqvh"
 _LOG = "scid_log"
+# Legacy: bearer was stored here before JWT-based access tokens; removed on each write.
 _TOKEN = "access_token"
 
 
@@ -66,22 +67,20 @@ async def _open_store(uri: str, *, provision: bool) -> Store:
     return await Store.open(uri, method, key)
 
 
-async def wallet_read(bare_scid: str) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Return ``(log_rows_or_none_if_no_file, access_token_or_none)``."""
+async def wallet_read(bare_scid: str) -> list[dict[str, Any]] | None:
+    """Return ``scid_log`` rows, or ``None`` if the wallet file is missing."""
     path = wallet_sqlite_path(bare_scid)
     if not path.is_file():
-        return None, None
+        return None
     uri = sqlite_uri_for_wallet_file(path)
     store = await _open_store(uri, provision=False)
     try:
         async with store as session:
             le = await session.fetch(_CAT, _LOG)
-            te = await session.fetch(_CAT, _TOKEN)
             rows = le.value_json if le else None
-            tok = te.value.decode("utf-8") if te and te.value else None
             if rows is not None and not isinstance(rows, list):
                 rows = None
-            return rows, tok
+            return rows
     finally:
         await store.close()
 
@@ -89,7 +88,6 @@ async def wallet_read(bare_scid: str) -> tuple[list[dict[str, Any]] | None, str 
 async def wallet_write_full(
     bare_scid: str,
     rows: list[dict[str, Any]],
-    access_token: str | None,
     *,
     provision: bool,
 ) -> None:
@@ -105,16 +103,10 @@ async def wallet_write_full(
                 await txn.replace(_CAT, _LOG, value_json=rows)
             else:
                 await txn.insert(_CAT, _LOG, value_json=rows)
-            if access_token is None:
-                try:
-                    await txn.remove(_CAT, _TOKEN)
-                except AskarError:
-                    pass
-            else:
-                if await txn.fetch(_CAT, _TOKEN):
-                    await txn.replace(_CAT, _TOKEN, value=access_token.encode("utf-8"))
-                else:
-                    await txn.insert(_CAT, _TOKEN, value=access_token.encode("utf-8"))
+            try:
+                await txn.remove(_CAT, _TOKEN)
+            except AskarError:
+                pass
             await txn.commit()
     finally:
         await store.close()
@@ -128,18 +120,17 @@ async def wallet_remove_file(bare_scid: str) -> None:
     await Store.remove(uri)
 
 
-def read_wallet_sync(bare_scid: str) -> tuple[list[dict[str, Any]] | None, str | None]:
+def read_wallet_sync(bare_scid: str) -> list[dict[str, Any]] | None:
     return _run(wallet_read(bare_scid))
 
 
 def write_wallet_sync(
     bare_scid: str,
     rows: list[dict[str, Any]],
-    access_token: str | None,
     *,
     provision: bool,
 ) -> None:
-    _run(wallet_write_full(bare_scid, rows, access_token, provision=provision))
+    _run(wallet_write_full(bare_scid, rows, provision=provision))
 
 
 def remove_wallet_sync(bare_scid: str) -> None:
