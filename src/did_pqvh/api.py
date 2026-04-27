@@ -5,12 +5,14 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import threading
 from datetime import datetime, timezone
 from typing import Annotated, Any, Self
 
 import base58
 from fastapi import Body, FastAPI, HTTPException, Path, Query
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .canonical import canonicalize_json
@@ -27,10 +29,11 @@ app = FastAPI(
         {
             "name": "scids",
             "description": (
-                "SCID log resources at the API root: `POST /` creates a signed entry; "
-                "`GET` / `PUT` / `DELETE /{scid}` read, update, or delete by bare multihash SCID or full "
-                "`did:pqvh:…` path segment. Create selects signing keys by sequential lookup of "
-                "`parameters.preRotationKeys` (empty list triggers a server-generated key, same as `POST /keys`)."
+                "SCID log resources at the API root: `POST /` appends the first signed entry; "
+                "`GET /{scid}` streams **NDJSON** (one JSON log entry per line, oldest first); "
+                "`PUT /{scid}` appends an updated entry; `DELETE /{scid}` removes the whole log. "
+                "Paths accept bare multihash SCID or full `did:pqvh:…`. Create selects signing keys by sequential "
+                "lookup of `parameters.preRotationKeys` (empty list triggers a server-generated key, same as `POST /keys`)."
             ),
         },
         {
@@ -41,9 +44,9 @@ app = FastAPI(
     ],
 )
 
-# Prototype in-memory registry: ``state.id`` -> last ``CreateResponse`` (not persistent; not for production).
-_scid_store_lock = threading.Lock()
-_scid_store: dict[str, dict[str, Any]] = {}
+# Prototype in-memory registry: ``state.id`` -> ordered list of signed log entries (not persistent; not for production).
+_scid_log_lock = threading.Lock()
+_scid_log: dict[str, list[dict[str, Any]]] = {}
 _pre_rotation_key_index: dict[str, str] = {}
 
 _key_store_lock = threading.Lock()
@@ -679,35 +682,49 @@ def _register_random_ml_dsa_key() -> KeyCreateResponse:
     )
 
 
-def _get_scid_entry_or_404(scid: str) -> CreateResponse:
-    """Load stored signed entry for ``scid`` (full DID string used as map key)."""
-    with _scid_store_lock:
-        raw = _scid_store.get(scid)
-    if raw is None:
-        raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
-    return CreateResponse.model_validate(raw)
+def _scid_log_snapshot(key: str) -> list[dict[str, Any]] | None:
+    """Copy current log lines for ``key`` (full ``did:pqvh:…``), or ``None`` if unknown."""
+    with _scid_log_lock:
+        rows = _scid_log.get(key)
+        if not rows:
+            return None
+        return [dict(r) for r in rows]
 
 
-@app.get("/resolve", response_model=CreateResponse, tags=["dids"])
+def _ndjson_bytes_iter(snapshot: list[dict[str, Any]]):
+    for row in snapshot:
+        yield (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _scid_log_streaming_response(key: str, *, not_found_detail: str | None = None) -> StreamingResponse:
+    snapshot = _scid_log_snapshot(key)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail=not_found_detail or f"SCID entry not found: {key!r}",
+        )
+    return StreamingResponse(
+        _ndjson_bytes_iter(snapshot),
+        media_type="application/x-ndjson; charset=utf-8",
+    )
+
+
+@app.get("/resolve", tags=["dids"])
 def dids_resolve(
     did: str = Query(
         ...,
         description="Full `did:pqvh:…` or bare base58 SCID (same normalization as `GET /{scid}`).",
     ),
-) -> CreateResponse:
-    """Resolve DID record by `did` query (local store)."""
+) -> StreamingResponse:
+    """Resolve DID log by `did` query (local store); same NDJSON body as ``GET /{scid}``."""
     key = _normalize_root_scid_lookup_key(did)
-    with _scid_store_lock:
-        raw = _scid_store.get(key)
-    if raw is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"DID not found in local store: {key!r}. "
-                "Public network resolution is not implemented in this prototype."
-            ),
-        )
-    return CreateResponse.model_validate(raw)
+    return _scid_log_streaming_response(
+        key,
+        not_found_detail=(
+            f"DID not found in local store: {key!r}. "
+            "Public network resolution is not implemented in this prototype."
+        ),
+    )
 
 
 @app.post("/credentials/issue", response_model=CredentialIssueResponse, tags=["credentials"])
@@ -823,33 +840,43 @@ def root_post_did(
     did = record.state.get("id")
     if not isinstance(did, str) or not did:
         raise HTTPException(status_code=500, detail="Resolved state.id is missing after create.")
-    with _scid_store_lock:
-        if did in _scid_store:
+    with _scid_log_lock:
+        if did in _scid_log:
             raise HTTPException(
                 status_code=409,
                 detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
             )
-        _scid_store[did] = record.model_dump()
+        _scid_log[did] = [record.model_dump()]
 
     return CreateDidResponse(logEntry=record)
 
 
 @app.get(
     "/{scid}",
-    response_model=CreateResponse,
     tags=["scids"],
-    summary="Read DID",
+    summary="Read DID log",
     description=(
-        "Read the stored signed entry. Path accepts a bare base58 **SCID** "
-        "(e.g. ``QmWty8to1v573wR3ZSj88FScJFY6JaVijGuJAA8UugrhoX``) or a full ``did:pqvh:<SCID>`` "
-        "single segment (see OpenAPI `pattern`). "
+        "NDJSON stream (``Content-Type: application/x-ndjson``): one compact JSON object per line, "
+        "signed log entries **oldest first** (initial create, then each ``PUT``). "
+        "Path accepts a bare base58 **SCID** (e.g. ``QmWty8to1v573wR3ZSj88FScJFY6JaVijGuJAA8UugrhoX``) or a full "
+        "``did:pqvh:<SCID>`` single segment (see OpenAPI `pattern`). "
         "Registered after all other routes so paths like `/health`, `/keys`, `/resolve`, "
         "and `/credentials` are not captured."
     ),
+    responses={
+        200: {
+            "description": "NDJSON stream of signed log entries (one JSON object per line).",
+            "content": {
+                "application/x-ndjson": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        }
+    },
 )
-def root_get_did(scid: ScidPathSegment) -> CreateResponse:
-    """Read a SCID entry (registered after static paths)."""
-    return _get_scid_entry_or_404(_normalize_root_scid_lookup_key(scid))
+def root_get_did(scid: ScidPathSegment) -> StreamingResponse:
+    """Stream the SCID log (registered after static paths)."""
+    return _scid_log_streaming_response(_normalize_root_scid_lookup_key(scid))
 
 
 @app.put(
@@ -886,11 +913,11 @@ def root_put_did(
             status_code=400,
             detail=f"Path scid resolved to {normalized!r}; must match body state.id {body_id!r}",
         )
-    with _scid_store_lock:
-        prev_raw = _scid_store.get(normalized)
-    if prev_raw is None:
+    with _scid_log_lock:
+        rows = _scid_log.get(normalized)
+    if not rows:
         raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
-    previous = CreateResponse.model_validate(prev_raw)
+    previous = CreateResponse.model_validate(rows[-1])
     keypair = _keypair_for_put(previous)
     vm = _verification_method_for_scid_put(previous)
     record = _create_did_record(
@@ -899,10 +926,10 @@ def root_put_did(
         verification_method=vm,
         version_number=_next_version_number(previous),
     )
-    with _scid_store_lock:
-        if normalized not in _scid_store:
+    with _scid_log_lock:
+        if normalized not in _scid_log:
             raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
-        _scid_store[normalized] = record.model_dump()
+        _scid_log[normalized].append(record.model_dump())
     return record
 
 
@@ -910,7 +937,7 @@ def root_put_did(
 def root_delete_did(scid: ScidPathSegment) -> None:
     """Remove SCID entry from the prototype registry (no auth in this prototype)."""
     normalized = _normalize_root_scid_lookup_key(scid)
-    with _scid_store_lock:
-        if normalized not in _scid_store:
+    with _scid_log_lock:
+        if normalized not in _scid_log:
             raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
-        del _scid_store[normalized]
+        del _scid_log[normalized]
