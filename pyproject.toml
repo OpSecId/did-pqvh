@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "did-pqvh"
+version = "0.1.0"
+description = "WebVH-style DID history signing with ML-DSA + JCS"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "base58>=2.1.1",
+  "dilithium-py",
+  "fastapi",
+  "uvicorn",
+]
+
+[project.scripts]
+did-pqvh = "did_pqvh.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

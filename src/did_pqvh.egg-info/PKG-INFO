@@ -1,0 +1,146 @@
+Metadata-Version: 2.4
+Name: did-pqvh
+Version: 0.1.0
+Summary: WebVH-style DID history signing with ML-DSA + JCS
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: base58>=2.1.1
+Requires-Dist: dilithium-py
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+
+# did-pqvh
+
+WebVH-style DID history experiments using ML-DSA (FIPS 204) and JSON Canonicalization Scheme (JCS).
+
+Current target Data Integrity cryptosuite (W3C CCG [di-quantum-safe](https://w3c-ccg.github.io/di-quantum-safe/)):
+- `mldsa44-jcs-2024` with proof `type` `DataIntegrityProof` (instead of `eddsa-jcs-2022`)
+- ML-DSA parameter set **44** (`ML_DSA_44` via `dilithium-py`)
+
+## Goal
+
+Keep the did:webvh-style update flow (canonical JSON payload + detached signature over canonical bytes),
+but swap the signing primitive from EdDSA to ML-DSA.
+
+## Status
+
+This repository currently provides:
+- A minimal signer/verifier interface for `mldsa44-jcs-2024`
+- JCS-based canonical payload serialization
+- A small CLI demo for signing/verifying payload files
+
+## Security note
+
+`dilithium-py` explicitly states it is educational and not side-channel hardened.
+Use this repository for interoperability prototyping, not production cryptographic assurance.
+
+## Quick start (uv)
+
+```bash
+uv sync
+```
+
+Sign payload JSON:
+
+```bash
+uv run did-pqvh sign --in payload.json --secret-key secret.key --verification-method did:webvh:example#key-1 --out proof.json
+```
+
+Verify proof:
+
+```bash
+uv run did-pqvh verify --in payload.json --proof proof.json --public-key public.key
+```
+
+Run API server:
+
+```bash
+uv run uvicorn did_pqvh.api:app --reload
+```
+
+Keys are a REST resource (prototype **in-memory** store; restart clears it). The path parameter is **`publicKeyMultibase`** (multibase `z` + base58btc of the raw ML-DSA public key from the create response). Use that string as `/keys/{publicKeyMultibase}` (encode for HTTP if your client requires it).
+
+- **`POST /keys`** — create (201); **409** if that `publicKeyMultibase` is already stored (same seed ⇒ same key).
+- **`GET /keys/{publicKeyMultibase}`** / **`PUT /keys/{publicKeyMultibase}`** / **`DELETE /keys/{publicKeyMultibase}`** — read, replace seed material (**PUT** may change the public key; if it does, the entry moves to the new multibase; **409** if that target is already taken), delete (204).
+
+Use **one** of `seed` or `seedMultibase` (the other `null`), or **both** only when UTF-8(`seed`) equals the multibase-decoded bytes. Examples use 32×`0` demo material.
+
+UTF-8 `seed` only:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/keys" \
+  -H "content-type: application/json" \
+  -d '{"seed": "00000000000000000000000000000000", "seedMultibase": null}'
+```
+
+**`seedMultibase` only** (`z` + base58btc of the same bytes):
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/keys" \
+  -H "content-type: application/json" \
+  -d '{"seed": null, "seedMultibase": "z4F7BsTMVPKFshM1MwLf6y23cid6fL3xMpazVoF9krzUw"}'
+```
+
+The **`u` + base64url** form of the same bytes is also accepted. The exact base58 body depends on the bytes (this demo starts with `z4F…`, not a fixed `z4c…` prefix).
+
+Read back (substitute `publicKeyMultibase` from the POST response body):
+
+```bash
+PUB="$(curl -s -X POST "http://127.0.0.1:8000/keys" -H "content-type: application/json" \
+  -d '{"seed": "00000000000000000000000000000000", "seedMultibase": null}' | python3 -c "import sys,json; print(json.load(sys.stdin)['publicKeyMultibase'])")"
+curl -s "http://127.0.0.1:8000/keys/${PUB}"
+```
+
+Issue a minimal Verifiable Credential (`POST /credentials/issue`):
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/credentials/issue" \
+  -H "content-type: application/json" \
+  -d '{
+    "issuer": "did:pqvh:issuer",
+    "credentialSubject": {"id": "did:pqvh:subject"},
+    "verification_method": "did:pqvh:issuer#key-1"
+  }'
+```
+
+Response keys (key resources):
+- `created` (UTC, RFC 3339 with `Z`)
+- `publicKeyMultibase` / `secretKeyMultibase` — multibase **`z` + base58btc** of the raw ML-DSA keys (`publicKeyMultibase` is the resource path)
+
+**Alias** resources hold a signed DID WebVH-like entry (prototype **in-memory** store keyed by `state.id`; restart clears it):
+
+- **`POST /alias`** — create (201); fails with **409** if that `state.id` already exists.
+- **`GET /alias/{alias}`** — read stored signed entry; **`{alias}`** is the DID string (e.g. percent-encode as `did%3Apqvh%3Amyid`).
+- **`PUT /alias/{alias}`** — update document/parameters and re-sign; body `state.id` must match the path. Omit signing keys in the body to reuse the keypair last stored for that entry.
+- **`DELETE /alias/{alias}`** — remove (204).
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/alias" \
+  -H "content-type: application/json" \
+  -d '{
+    "state": {
+      "@context": ["https://www.w3.org/ns/did/v1"],
+      "id": "did:pqvh:example-scid"
+    },
+    "parameters": {
+      "preRotationKey": "did:key:z6MkPreRotateKey...",
+      "witness": {"threshold": 0, "witnesses": []},
+      "watcher": {"endpoints": ["https://watcher.example"], "policy": "none"}
+    },
+    "verification_method": "did:pqvh:example#key-1"
+  }'
+```
+
+```bash
+curl -s "http://127.0.0.1:8000/alias/did%3Apqvh%3Aexample-scid"
+```
+
+For an alias created via this API, **`GET /alias/{alias}`** returns the stored **`entry`**, **`proof`**, and **`public_key_b64u`**; the record was verified at write time (`verified` on create/update).
+
+Verify a credential (`POST /credentials/verify`): body has the secured `credential` JSON (with top-level `proof`) and the issuer’s public key in one of the same two forms. Response includes `verified` and the unsecured `credential` when valid.
+
+## Dependency management
+
+- Add dependency: `uv add <package>`
+- Add dev dependency: `uv add --dev <package>`
+- Refresh lockfile: `uv lock`
