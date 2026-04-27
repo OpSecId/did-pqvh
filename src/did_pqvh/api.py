@@ -55,7 +55,7 @@ MINIMAL_DID_DOCUMENT: dict[str, Any] = {
     "id": "did:pqvh:{SCID}",
 }
 
-# SCID log entry proofs use ``did:key:{publicKeyMultibase}#vm`` (fragment is fixed, not repeated multibase).
+# SCID log entry proofs: ``_did_key_verification_method`` → ``did:key:{publicKeyMultibase}#vm`` (fixed fragment).
 SCID_DID_KEY_VM_FRAGMENT = "vm"
 
 # ``GET /{scid}`` only: bare base58 **SCID** (multihash string, e.g. ``QmWty8to1v573wR3ZS…``) **or**
@@ -237,8 +237,8 @@ def _compact_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _scid_proof_verification_method(public_key_multibase: str) -> str:
-    """Build proof ``verificationMethod`` for SCID entries: ``did:key:{multibase}#vm``."""
+def _did_key_verification_method(public_key_multibase: str) -> str:
+    """Build ``did:key`` proof ``verificationMethod``: ``did:key:{multibase}#vm``."""
     return f"did:key:{public_key_multibase}#{SCID_DID_KEY_VM_FRAGMENT}"
 
 
@@ -812,7 +812,7 @@ def root_post_did(
     keypair, public_key_multibase = _keypair_from_pre_rotation_keys(
         effective_req.parameters.preRotationKeys
     )
-    vm = _scid_proof_verification_method(public_key_multibase)
+    vm = _did_key_verification_method(public_key_multibase)
     record = _create_did_record(
         effective_req,
         keypair=keypair,
