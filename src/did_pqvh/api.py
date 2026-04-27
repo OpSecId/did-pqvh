@@ -55,6 +55,9 @@ MINIMAL_DID_DOCUMENT: dict[str, Any] = {
     "id": "did:pqvh:{SCID}",
 }
 
+# SCID log entry proofs use ``did:key:{publicKeyMultibase}#vm`` (fragment is fixed, not repeated multibase).
+SCID_DID_KEY_VM_FRAGMENT = "vm"
+
 # ``GET /{scid}`` only: bare base58 **SCID** (multihash string, e.g. ``QmWty8to1v573wR3ZS…``) **or**
 # full ``did:pqvh:<SCID>``. Lower bound avoids short paths like ``/health`` matching this route.
 SCID_ROOT_PATH_PATTERN = r"^(?:did:pqvh:)?[1-9A-HJ-NP-Za-km-z]{32,80}$"
@@ -234,30 +237,35 @@ def _compact_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _scid_proof_verification_method(public_key_multibase: str) -> str:
+    """Build proof ``verificationMethod`` for SCID entries: ``did:key:{multibase}#vm``."""
+    return f"did:key:{public_key_multibase}#{SCID_DID_KEY_VM_FRAGMENT}"
+
+
 def _public_key_multibase_from_did_key_verification_method(verification_method: str) -> str:
-    """Parse a did:key verification method as ``did:key:{mb}#{mb}``; return ``mb`` for ``/keys`` lookup."""
+    """Parse ``did:key:{publicKeyMultibase}#vm``; return ``publicKeyMultibase`` for ``/keys`` lookup."""
     prefix = "did:key:"
     if not verification_method.startswith(prefix):
         raise HTTPException(
             status_code=400,
             detail=(
-                "verificationMethod must be did:key:{publicKeyMultibase}#{same_publicKeyMultibase} "
-                "(multibase from POST /keys, repeated after did:key: and as the fragment)."
+                "verificationMethod must be did:key:{publicKeyMultibase}#vm "
+                "(multibase from POST /keys as the did:key method-specific id)."
             ),
         )
     rest = verification_method[len(prefix) :]
     if "#" not in rest:
         raise HTTPException(
             status_code=400,
-            detail="verificationMethod must include a # fragment matching the did:key method id.",
+            detail="verificationMethod must include a # fragment (expected `#vm`).",
         )
     method_id, fragment = rest.split("#", 1)
-    if not method_id or method_id != fragment:
+    if not method_id or fragment != SCID_DID_KEY_VM_FRAGMENT:
         raise HTTPException(
             status_code=400,
             detail=(
-                "verificationMethod must be did:key:{publicKeyMultibase}#{publicKeyMultibase} "
-                "with the same multibase in both places."
+                "verificationMethod must be did:key:{publicKeyMultibase}#vm "
+                f"with fragment {SCID_DID_KEY_VM_FRAGMENT!r}, not {fragment!r}."
             ),
         )
     return method_id
@@ -804,7 +812,7 @@ def root_post_did(
     keypair, public_key_multibase = _keypair_from_pre_rotation_keys(
         effective_req.parameters.preRotationKeys
     )
-    vm = f"did:key:{public_key_multibase}#{public_key_multibase}"
+    vm = _scid_proof_verification_method(public_key_multibase)
     record = _create_did_record(
         effective_req,
         keypair=keypair,

@@ -38,7 +38,7 @@ instead of:
 {
   "type": "DataIntegrityProof",
   "cryptosuite": "mldsa44-jcs-2024",
-  "verificationMethod": "did:key:z<ML-DSA_publicKeyMultibase>#z<ML-DSA_publicKeyMultibase>",
+  "verificationMethod": "did:key:z<ML-DSA_publicKeyMultibase>#vm",
   "created": "2026-04-27T00:00:00Z",
   "proofValue": "u<base64url-nopad-of-2420-signature-bytes>"
 }
