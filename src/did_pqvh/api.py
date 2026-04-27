@@ -37,7 +37,7 @@ app = FastAPI(
                 "`access_token` + `token_type: Bearer` (store for writes); "
                 "`GET /{scid}` streams **NDJSON** (one JSON log entry per line, oldest first); "
                 "`PUT /{scid}` / `DELETE /{scid}` require `Authorization: Bearer <access_token>`. "
-                "Optional **`/alias/{alias}`** paths mirror reads and are managed under the **`aliases`** tag. "
+                "Optional **`GET /alias/{alias}`** (see **`aliases`** tag) mirrors **`GET /{scid}`** when an alias is registered. "
                 "Paths accept bare multihash SCID or full `did:pqvh:…`. Create selects signing keys by sequential "
                 "lookup of `parameters.preRotationKeys` (empty list triggers a server-generated key, same as `POST /keys`)."
             ),
@@ -47,15 +47,15 @@ app = FastAPI(
             "description": (
                 "DID resolution (`GET /resolve?did=` returns JSON with top-level `didDocument` from the local store). "
                 "When `DID_PQVH_WEBVH_HOSTNAME` is set, resolved documents merge WebVH-style `alsoKnownAs` entries "
-                "for each bound `/alias/…` (see env in README)."
+                "for each registered alias (see env in README)."
             ),
         },
         {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
         {
             "name": "aliases",
             "description": (
-                "Optional path aliases for SCID logs: `GET /alias/{alias}` streams the same NDJSON as `GET /{scid}` "
-                "for the bound DID. Create/delete bindings with the target DID's bearer token."
+                "Read-only alias paths: `GET /alias/{alias}` streams the same NDJSON as `GET /{scid}` when the alias "
+                "is registered in the in-memory map (this build does not expose HTTP create/delete for aliases)."
             ),
         },
     ],
@@ -67,6 +67,7 @@ _scid_log: dict[str, list[dict[str, Any]]] = {}
 # Per-DID bearer token (returned as ``access_token`` on ``POST /``); required on ``PUT`` / ``DELETE`` via Authorization.
 _scid_secret: dict[str, str] = {}
 # Human-friendly alias (lowercase key) -> full ``did:pqvh:…`` log key (same lock as ``_scid_log``).
+# Not populated by HTTP in this revision; reserved for operator wiring / future registration APIs.
 _alias_to_did: dict[str, str] = {}
 _pre_rotation_key_index: dict[str, str] = {}
 
@@ -487,22 +488,6 @@ class CreateResponse(BaseModel):
     proof: dict[str, Any]
 
 
-class AliasBindRequest(BaseModel):
-    """Bind an ``/alias/{alias}`` path to an existing SCID log."""
-
-    scid: str = Field(
-        ...,
-        description="Bare base58 SCID or full `did:pqvh:…` identifying the log to bind (must already exist).",
-    )
-
-
-class AliasBindResponse(BaseModel):
-    """Successful alias registration."""
-
-    alias: str = Field(..., description="Canonical alias key (lowercase).")
-    did: str = Field(..., description="Full `did:pqvh:…` key for the bound log.")
-
-
 class CreateDidResponse(BaseModel):
     """Create response: signed log entry plus OAuth-style bearer for subsequent writes."""
 
@@ -881,14 +866,14 @@ def dids_resolve(
         ...,
         description=(
             "Full `did:pqvh:…` or bare base58 SCID (same normalization as `GET /{scid}`). "
-            "If `DID_PQVH_WEBVH_HOSTNAME` is set, `didDocument.alsoKnownAs` lists WebVH-style DIDs for each `/alias/…` binding."
+            "If `DID_PQVH_WEBVH_HOSTNAME` is set, `didDocument.alsoKnownAs` lists WebVH-style DIDs for each registered alias."
         ),
     ),
 ) -> dict[str, Any]:
     """Resolve DID document from the latest SCID log entry (local store only in this prototype).
 
     When ``DID_PQVH_WEBVH_HOSTNAME`` is set, ``alsoKnownAs`` includes one WebVH-style DID per bound
-    ``/alias/…`` handle: ``did:webvh:{SCID}:{hostname}:alias:{alias}`` (not part of the signed log).
+    registered alias: ``did:webvh:{SCID}:{hostname}:alias:{alias}`` (not part of the signed log).
     """
     key = _normalize_root_scid_lookup_key(did)
     snapshot = _scid_log_snapshot(key)
@@ -1036,38 +1021,6 @@ def root_post_did(
     return CreateDidResponse(logEntry=record, access_token=auth_secret, token_type="Bearer")
 
 
-@app.post(
-    "/alias/{alias}",
-    response_model=AliasBindResponse,
-    status_code=201,
-    tags=["aliases"],
-    summary="Create alias for a SCID log",
-)
-def alias_post(
-    alias: AliasPathSegment,
-    req: AliasBindRequest,
-    authorization: AuthorizationBearerHeader = None,
-) -> AliasBindResponse:
-    """Bind ``alias`` to an existing SCID log; requires the target DID's ``Authorization: Bearer`` token."""
-    a_key = _normalize_alias_key(alias)
-    target = _normalize_root_scid_lookup_key(req.scid)
-    bearer = _bearer_token_from_authorization(authorization)
-    with _scid_log_lock:
-        if target not in _scid_log:
-            raise HTTPException(
-                status_code=404,
-                detail=f"SCID log not found for bind target: {target!r}",
-            )
-        _require_scid_bearer_token(target, bearer)
-        if a_key in _alias_to_did:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Alias {a_key!r} is already bound; DELETE it first to reassign.",
-            )
-        _alias_to_did[a_key] = target
-    return AliasBindResponse(alias=a_key, did=target)
-
-
 @app.get(
     "/alias/{alias}",
     tags=["aliases"],
@@ -1094,22 +1047,6 @@ def alias_get(alias: AliasPathSegment) -> StreamingResponse:
         did_key,
         not_found_detail=f"Alias {a_key!r} is stale (bound DID log missing): {did_key!r}",
     )
-
-
-@app.delete("/alias/{alias}", status_code=204, tags=["aliases"], summary="Delete alias binding")
-def alias_delete(
-    alias: AliasPathSegment,
-    authorization: AuthorizationBearerHeader = None,
-) -> None:
-    """Remove an alias; requires ``Authorization: Bearer`` for the **currently bound** DID."""
-    a_key = _normalize_alias_key(alias)
-    bearer = _bearer_token_from_authorization(authorization)
-    with _scid_log_lock:
-        did_key = _alias_to_did.get(a_key)
-        if did_key is None:
-            raise HTTPException(status_code=404, detail=f"Unknown alias: {a_key!r}")
-        _require_scid_bearer_token(did_key, bearer)
-        del _alias_to_did[a_key]
 
 
 @app.get(
