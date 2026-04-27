@@ -34,6 +34,7 @@ app = FastAPI(
                 "`access_token` + `token_type: Bearer` (store for writes); "
                 "`GET /{scid}` streams **NDJSON** (one JSON log entry per line, oldest first); "
                 "`PUT /{scid}` / `DELETE /{scid}` require `Authorization: Bearer <access_token>`. "
+                "Optional **`/alias/{alias}`** paths mirror reads and are managed under the **`aliases`** tag. "
                 "Paths accept bare multihash SCID or full `did:pqvh:…`. Create selects signing keys by sequential "
                 "lookup of `parameters.preRotationKeys` (empty list triggers a server-generated key, same as `POST /keys`)."
             ),
@@ -43,6 +44,13 @@ app = FastAPI(
             "description": "DID resolution (`GET /resolve?did=` returns JSON with top-level `didDocument` from the local store).",
         },
         {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
+        {
+            "name": "aliases",
+            "description": (
+                "Optional path aliases for SCID logs: `GET /alias/{alias}` streams the same NDJSON as `GET /{scid}` "
+                "for the bound DID. Create/delete bindings with the target DID's bearer token."
+            ),
+        },
     ],
 )
 
@@ -51,6 +59,8 @@ _scid_log_lock = threading.Lock()
 _scid_log: dict[str, list[dict[str, Any]]] = {}
 # Per-DID bearer token (returned as ``access_token`` on ``POST /``); required on ``PUT`` / ``DELETE`` via Authorization.
 _scid_secret: dict[str, str] = {}
+# Human-friendly alias (lowercase key) -> full ``did:pqvh:…`` log key (same lock as ``_scid_log``).
+_alias_to_did: dict[str, str] = {}
 _pre_rotation_key_index: dict[str, str] = {}
 
 _key_store_lock = threading.Lock()
@@ -69,12 +79,20 @@ SCID_DID_KEY_VM_FRAGMENT = "vm"
 # full ``did:pqvh:<SCID>``. Lower bound avoids short paths like ``/health`` matching this route.
 SCID_ROOT_PATH_PATTERN = r"^(?:did:pqvh:)?[1-9A-HJ-NP-Za-km-z]{32,80}$"
 
+# ``/alias/{alias}``: URL-safe handle (stored lowercase); must not overlap reserved single-segment roots.
+ALIAS_SEGMENT_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
+
 
 def _normalize_root_scid_lookup_key(path_segment: str) -> str:
     """Map root path segment to in-memory store key (full ``did:pqvh:…`` DID string)."""
     if path_segment.startswith("did:pqvh:"):
         return path_segment
     return f"did:pqvh:{path_segment}"
+
+
+def _normalize_alias_key(alias: str) -> str:
+    """Canonical alias map key (lowercase)."""
+    return alias.strip().lower()
 
 
 ScidPathSegment = Annotated[
@@ -93,6 +111,14 @@ AuthorizationBearerHeader = Annotated[
     Header(
         alias="Authorization",
         description="`Bearer <access_token>` where `access_token` is from the `POST /` JSON body.",
+    ),
+]
+
+AliasPathSegment = Annotated[
+    str,
+    Path(
+        pattern=ALIAS_SEGMENT_PATTERN,
+        description="Alias handle (1–128 chars; letters, digits, `.`, `_`, `-`; stored case-insensitively).",
     ),
 ]
 
@@ -454,6 +480,22 @@ class CreateResponse(BaseModel):
     proof: dict[str, Any]
 
 
+class AliasBindRequest(BaseModel):
+    """Bind an ``/alias/{alias}`` path to an existing SCID log."""
+
+    scid: str = Field(
+        ...,
+        description="Bare base58 SCID or full `did:pqvh:…` identifying the log to bind (must already exist).",
+    )
+
+
+class AliasBindResponse(BaseModel):
+    """Successful alias registration."""
+
+    alias: str = Field(..., description="Canonical alias key (lowercase).")
+    did: str = Field(..., description="Full `did:pqvh:…` key for the bound log.")
+
+
 class CreateDidResponse(BaseModel):
     """Create response: signed log entry plus OAuth-style bearer for subsequent writes."""
 
@@ -755,6 +797,13 @@ def _require_scid_bearer_token(normalized: str, token: str | None) -> None:
         )
 
 
+def _drop_aliases_for_did_locked(normalized_did: str) -> None:
+    """Remove every alias pointing at ``normalized_did`` (call under ``_scid_log_lock``)."""
+    stale = [a for a, did in _alias_to_did.items() if did == normalized_did]
+    for a in stale:
+        del _alias_to_did[a]
+
+
 @app.get("/resolve", tags=["dids"])
 def dids_resolve(
     did: str = Query(
@@ -909,6 +958,82 @@ def root_post_did(
     return CreateDidResponse(logEntry=record, access_token=auth_secret, token_type="Bearer")
 
 
+@app.post(
+    "/alias/{alias}",
+    response_model=AliasBindResponse,
+    status_code=201,
+    tags=["aliases"],
+    summary="Create alias for a SCID log",
+)
+def alias_post(
+    alias: AliasPathSegment,
+    req: AliasBindRequest,
+    authorization: AuthorizationBearerHeader = None,
+) -> AliasBindResponse:
+    """Bind ``alias`` to an existing SCID log; requires the target DID's ``Authorization: Bearer`` token."""
+    a_key = _normalize_alias_key(alias)
+    target = _normalize_root_scid_lookup_key(req.scid)
+    bearer = _bearer_token_from_authorization(authorization)
+    with _scid_log_lock:
+        if target not in _scid_log:
+            raise HTTPException(
+                status_code=404,
+                detail=f"SCID log not found for bind target: {target!r}",
+            )
+        _require_scid_bearer_token(target, bearer)
+        if a_key in _alias_to_did:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Alias {a_key!r} is already bound; DELETE it first to reassign.",
+            )
+        _alias_to_did[a_key] = target
+    return AliasBindResponse(alias=a_key, did=target)
+
+
+@app.get(
+    "/alias/{alias}",
+    tags=["aliases"],
+    summary="Read DID log by alias",
+    responses={
+        200: {
+            "description": "NDJSON stream (same as `GET /{scid}` for the bound DID).",
+            "content": {
+                "application/x-ndjson": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        }
+    },
+)
+def alias_get(alias: AliasPathSegment) -> StreamingResponse:
+    """Stream the bound SCID log (same NDJSON body as ``GET /{scid}``)."""
+    a_key = _normalize_alias_key(alias)
+    with _scid_log_lock:
+        did_key = _alias_to_did.get(a_key)
+    if did_key is None:
+        raise HTTPException(status_code=404, detail=f"Unknown alias: {a_key!r}")
+    return _scid_log_streaming_response(
+        did_key,
+        not_found_detail=f"Alias {a_key!r} is stale (bound DID log missing): {did_key!r}",
+    )
+
+
+@app.delete("/alias/{alias}", status_code=204, tags=["aliases"], summary="Delete alias binding")
+def alias_delete(
+    alias: AliasPathSegment,
+    authorization: AuthorizationBearerHeader = None,
+) -> None:
+    """Remove an alias; requires ``Authorization: Bearer`` for the **currently bound** DID."""
+    a_key = _normalize_alias_key(alias)
+    bearer = _bearer_token_from_authorization(authorization)
+    with _scid_log_lock:
+        did_key = _alias_to_did.get(a_key)
+        if did_key is None:
+            raise HTTPException(status_code=404, detail=f"Unknown alias: {a_key!r}")
+        _require_scid_bearer_token(did_key, bearer)
+        del _alias_to_did[a_key]
+
+
 @app.get(
     "/{scid}",
     tags=["scids"],
@@ -918,7 +1043,7 @@ def root_post_did(
         "signed log entries **oldest first** (initial create, then each ``PUT``). "
         "Path accepts a bare base58 **SCID** (e.g. ``QmWty8to1v573wR3ZSj88FScJFY6JaVijGuJAA8UugrhoX``) or a full "
         "``did:pqvh:<SCID>`` single segment (see OpenAPI `pattern`). "
-        "Registered after all other routes so paths like `/health`, `/keys`, `/resolve`, "
+        "Registered after all other routes so paths like `/health`, `/keys`, `/resolve`, `/alias/…`, "
         "and `/credentials` are not captured."
     ),
     responses={
@@ -1008,3 +1133,4 @@ def root_delete_did(
         _require_scid_bearer_token(normalized, bearer)
         del _scid_log[normalized]
         _scid_secret.pop(normalized, None)
+        _drop_aliases_for_did_locked(normalized)

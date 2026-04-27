@@ -21,7 +21,7 @@ instead of:
 
 ## Current prototype choices
 
-- OpenAPI: operations are grouped under tags **`server`** (e.g. health), **`keys`**, **`scids`** (root SCID log CRUD), **`dids`** (`GET /resolve`), **`credentials`**.
+- OpenAPI: operations are grouped under tags **`server`** (e.g. health), **`keys`**, **`scids`** (root SCID log CRUD), **`aliases`** (`/alias/{alias}`), **`dids`** (`GET /resolve`), **`credentials`**.
 - Library: `dilithium-py` (`ML_DSA_44` — ML-DSA-44 parameter set)
 - Signature in `proofValue`: multibase **base64url** (`u` prefix) without padding
 - API endpoints:
@@ -29,7 +29,8 @@ instead of:
   - `GET /keys/{publicKeyMultibase}` / `PUT` / `DELETE` -> read, update (may move to new multibase), delete
   - `POST /` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); JSON body includes `logEntry`, **`access_token`**, and **`token_type`: `Bearer`** (opaque per-DID write credential)
   - `GET /{scid}` -> **NDJSON** stream (`application/x-ndjson`): one JSON signed log entry per line, oldest first (append-only history: create then each `PUT`); no bearer required
-  - `PUT /{scid}` / `DELETE /{scid}` -> append updated signed entry, or delete entire log; both require **`Authorization: Bearer <access_token>`** matching create’s `access_token` (**403** if missing or invalid). Path accepts bare base58 SCID or full `did:pqvh:<SCID>`; registered last so `/health`, `/keys`, `/resolve`, `/credentials` win. Use TLS; avoid logging `Authorization` at proxies.
+  - `PUT /{scid}` / `DELETE /{scid}` -> append updated signed entry, or delete entire log; both require **`Authorization: Bearer <access_token>`** matching create’s `access_token` (**403** if missing or invalid). Path accepts bare base58 SCID or full `did:pqvh:<SCID>`; registered last so `/health`, `/keys`, `/resolve`, `/alias/…`, `/credentials` win. Use TLS; avoid logging `Authorization` at proxies.
+  - `POST /alias/{alias}` / `GET /alias/{alias}` / `DELETE /alias/{alias}` -> optional URL alias for an existing log (`POST`/`DELETE` need the bound DID’s bearer); `GET` is the same NDJSON as `GET /{scid}`; deleting the SCID removes aliases pointing at it
   - `GET /resolve?did={did}` -> JSON `{ "didDocument": <latest log entry state> }` (full `did:pqvh:…` or bare SCID); use `GET /{scid}` for the full NDJSON log
   - `POST /credentials/issue` -> minimal W3C VC (`@context`, `type`, `issuer`, `issuanceDate`, `credentialSubject`) + `mldsa44-jcs-2024` proof
   - `POST /credentials/verify` -> verify secured VC + public key; returns unsecured credential when valid
