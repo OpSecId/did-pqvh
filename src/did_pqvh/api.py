@@ -24,41 +24,64 @@ from .suite import KeyPair, make_proof, verify_payload, verify_proof_mldsa44_jcs
 from .suite import generate_keypair as generate_ml_dsa_keypair
 from .suite import generate_keypair_from_seed
 
+
+def _key_management_enabled() -> bool:
+    """True when ``KEY_MANAGEMENT`` is set to a truthy value (``1``, ``true``, ``yes``, ``on``)."""
+    v = os.environ.get("KEY_MANAGEMENT", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _openapi_tags() -> list[dict[str, str]]:
+    tags: list[dict[str, str]] = [
+        {"name": "server", "description": "Server metadata and health endpoints."},
+    ]
+    if _key_management_enabled():
+        tags.append(
+            {
+                "name": "keys",
+                "description": "ML-DSA keypair resources; path key is `publicKeyMultibase` (multibase `z` + base58btc).",
+            }
+        )
+    tags.extend(
+        [
+            {
+                "name": "scids",
+                "description": (
+                    "SCID log resources at the API root: `POST /` appends the first signed entry and returns "
+                    "`access_token` + `token_type: Bearer` (store for writes); "
+                    "`GET /{scid}` streams **NDJSON** (one JSON log entry per line, oldest first); "
+                    "`PUT /{scid}` / `DELETE /{scid}` require `Authorization: Bearer <access_token>`. "
+                    "Optional **`GET /alias/{alias}`** (see **`aliases`** tag) mirrors **`GET /{scid}`** when an alias is registered. "
+                    "Paths accept bare multihash SCID or full `did:pqvh:…`. Create selects signing keys by sequential "
+                    "lookup of `parameters.preRotationKeys` (empty list triggers a server-generated key in the internal store; "
+                    "set env **`KEY_MANAGEMENT=true`** to expose the `/keys` HTTP API)."
+                ),
+            },
+            {
+                "name": "dids",
+                "description": (
+                    "DID resolution (`GET /resolve?did=` returns JSON with top-level `didDocument` from the local store). "
+                    "When `DID_PQVH_WEBVH_HOSTNAME` is set, resolved documents merge WebVH-style `alsoKnownAs` entries "
+                    "for each registered alias (see env in README)."
+                ),
+            },
+            {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
+            {
+                "name": "aliases",
+                "description": (
+                    "Read-only alias paths: `GET /alias/{alias}` streams the same NDJSON as `GET /{scid}` when the alias "
+                    "is registered in the in-memory map (this build does not expose HTTP create/delete for aliases)."
+                ),
+            },
+        ]
+    )
+    return tags
+
+
 app = FastAPI(
     title="did-pqvh API",
     version="0.1.0",
-    openapi_tags=[
-        {"name": "server", "description": "Server metadata and health endpoints."},
-        {"name": "keys", "description": "ML-DSA keypair resources; path key is `publicKeyMultibase` (multibase `z` + base58btc)."},
-        {
-            "name": "scids",
-            "description": (
-                "SCID log resources at the API root: `POST /` appends the first signed entry and returns "
-                "`access_token` + `token_type: Bearer` (store for writes); "
-                "`GET /{scid}` streams **NDJSON** (one JSON log entry per line, oldest first); "
-                "`PUT /{scid}` / `DELETE /{scid}` require `Authorization: Bearer <access_token>`. "
-                "Optional **`GET /alias/{alias}`** (see **`aliases`** tag) mirrors **`GET /{scid}`** when an alias is registered. "
-                "Paths accept bare multihash SCID or full `did:pqvh:…`. Create selects signing keys by sequential "
-                "lookup of `parameters.preRotationKeys` (empty list triggers a server-generated key, same as `POST /keys`)."
-            ),
-        },
-        {
-            "name": "dids",
-            "description": (
-                "DID resolution (`GET /resolve?did=` returns JSON with top-level `didDocument` from the local store). "
-                "When `DID_PQVH_WEBVH_HOSTNAME` is set, resolved documents merge WebVH-style `alsoKnownAs` entries "
-                "for each registered alias (see env in README)."
-            ),
-        },
-        {"name": "credentials", "description": "Verifiable Credentials (issue and verify)."},
-        {
-            "name": "aliases",
-            "description": (
-                "Read-only alias paths: `GET /alias/{alias}` streams the same NDJSON as `GET /{scid}` when the alias "
-                "is registered in the in-memory map (this build does not expose HTTP create/delete for aliases)."
-            ),
-        },
-    ],
+    openapi_tags=_openapi_tags(),
 )
 
 # Prototype in-memory registry: ``state.id`` -> ordered list of signed log entries (not persistent; not for production).
@@ -638,93 +661,92 @@ def _create_key_record(req: KeyCreateRequest) -> KeyCreateResponse:
     )
 
 
-@app.post(
-    "/keys",
-    response_model=KeyCreateResponse,
-    status_code=201,
-    summary="Create key",
-    response_description="New ML-DSA keypair and `created` timestamp; resource URL is `/keys/{publicKeyMultibase}`.",
-    tags=["keys"],
-)
-def keys_post(
-    req: Annotated[
-        KeyCreateRequest,
-        Body(
-            openapi_examples={
-                "seed_only": {
-                    "summary": "UTF-8 seed",
-                    "description": "Seed material as UTF-8 string.",
-                    "value": {
-                        "seed": "00000000000000000000000000000000",
+if _key_management_enabled():
+
+    @app.post(
+        "/keys",
+        response_model=KeyCreateResponse,
+        status_code=201,
+        summary="Create key",
+        response_description="New ML-DSA keypair and `created` timestamp; resource URL is `/keys/{publicKeyMultibase}`.",
+        tags=["keys"],
+    )
+    def keys_post(
+        req: Annotated[
+            KeyCreateRequest,
+            Body(
+                openapi_examples={
+                    "seed_only": {
+                        "summary": "UTF-8 seed",
+                        "description": "Seed material as UTF-8 string.",
+                        "value": {
+                            "seed": "00000000000000000000000000000000",
+                        },
                     },
                 },
-            },
-        ),
-    ],
-) -> KeyCreateResponse:
-    """Create a key resource keyed by ``publicKeyMultibase`` (prototype in-memory registry)."""
-    record = _create_key_record(req)
-    pk = record.publicKeyMultibase
-    with _key_store_lock:
-        if pk in _key_store:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"A key is already stored for publicKeyMultibase={pk!r}. "
-                    "Use PUT to replace or DELETE first."
-                ),
-            )
-        _key_store[pk] = record.model_dump()
-        _pre_rotation_key_index[record.preRotationKey] = pk
-    return record
+            ),
+        ],
+    ) -> KeyCreateResponse:
+        """Create a key resource keyed by ``publicKeyMultibase`` (prototype in-memory registry)."""
+        record = _create_key_record(req)
+        pk = record.publicKeyMultibase
+        with _key_store_lock:
+            if pk in _key_store:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"A key is already stored for publicKeyMultibase={pk!r}. "
+                        "Use PUT to replace or DELETE first."
+                    ),
+                )
+            _key_store[pk] = record.model_dump()
+            _pre_rotation_key_index[record.preRotationKey] = pk
+        return record
 
+    @app.get("/keys/{publicKeyMultibase:path}", response_model=KeyCreateResponse, tags=["keys"])
+    def keys_get(publicKeyMultibase: str) -> KeyCreateResponse:
+        """Read stored keypair for this ``publicKeyMultibase`` (use raw multibase string in path; encode for HTTP if needed)."""
+        with _key_store_lock:
+            raw = _key_store.get(publicKeyMultibase)
+        if raw is None:
+            raise HTTPException(status_code=404, detail=f"Key not found for publicKeyMultibase={publicKeyMultibase!r}")
+        return KeyCreateResponse.model_validate(raw)
 
-@app.get("/keys/{publicKeyMultibase:path}", response_model=KeyCreateResponse, tags=["keys"])
-def keys_get(publicKeyMultibase: str) -> KeyCreateResponse:
-    """Read stored keypair for this ``publicKeyMultibase`` (use raw multibase string in path; encode for HTTP if needed)."""
-    with _key_store_lock:
-        raw = _key_store.get(publicKeyMultibase)
-    if raw is None:
-        raise HTTPException(status_code=404, detail=f"Key not found for publicKeyMultibase={publicKeyMultibase!r}")
-    return KeyCreateResponse.model_validate(raw)
+    @app.put("/keys/{publicKeyMultibase:path}", response_model=KeyCreateResponse, tags=["keys"])
+    def keys_put(publicKeyMultibase: str, req: KeyCreateRequest) -> KeyCreateResponse:
+        """Replace key material from new seed input. If the derived public key changes, the store moves the entry to the new multibase key."""
+        record = _create_key_record(req)
+        new_pk = record.publicKeyMultibase
+        with _key_store_lock:
+            if publicKeyMultibase not in _key_store:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Key not found for publicKeyMultibase={publicKeyMultibase!r}",
+                )
+            if new_pk != publicKeyMultibase and new_pk in _key_store:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Derived publicKeyMultibase={new_pk!r} already exists; choose a different seed or delete the other key first.",
+                )
+            old_record = KeyCreateResponse.model_validate(_key_store[publicKeyMultibase])
+            del _key_store[publicKeyMultibase]
+            _pre_rotation_key_index.pop(old_record.preRotationKey, None)
+            _key_store[new_pk] = record.model_dump()
+            _pre_rotation_key_index[record.preRotationKey] = new_pk
+        return record
 
-
-@app.put("/keys/{publicKeyMultibase:path}", response_model=KeyCreateResponse, tags=["keys"])
-def keys_put(publicKeyMultibase: str, req: KeyCreateRequest) -> KeyCreateResponse:
-    """Replace key material from new seed input. If the derived public key changes, the store moves the entry to the new multibase key."""
-    record = _create_key_record(req)
-    new_pk = record.publicKeyMultibase
-    with _key_store_lock:
-        if publicKeyMultibase not in _key_store:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Key not found for publicKeyMultibase={publicKeyMultibase!r}",
-            )
-        if new_pk != publicKeyMultibase and new_pk in _key_store:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Derived publicKeyMultibase={new_pk!r} already exists; choose a different seed or delete the other key first.",
-            )
-        old_record = KeyCreateResponse.model_validate(_key_store[publicKeyMultibase])
-        del _key_store[publicKeyMultibase]
-        _pre_rotation_key_index.pop(old_record.preRotationKey, None)
-        _key_store[new_pk] = record.model_dump()
-        _pre_rotation_key_index[record.preRotationKey] = new_pk
-    return record
-
-
-@app.delete("/keys/{publicKeyMultibase:path}", status_code=204, tags=["keys"])
-def keys_delete(publicKeyMultibase: str) -> None:
-    """Remove key from the prototype registry."""
-    with _key_store_lock:
-        if publicKeyMultibase not in _key_store:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Key not found for publicKeyMultibase={publicKeyMultibase!r}",
-            )
-        record = KeyCreateResponse.model_validate(_key_store[publicKeyMultibase])
-        del _key_store[publicKeyMultibase]
-        _pre_rotation_key_index.pop(record.preRotationKey, None)
+    @app.delete("/keys/{publicKeyMultibase:path}", status_code=204, tags=["keys"])
+    def keys_delete(publicKeyMultibase: str) -> None:
+        """Remove key from the prototype registry."""
+        with _key_store_lock:
+            if publicKeyMultibase not in _key_store:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Key not found for publicKeyMultibase={publicKeyMultibase!r}",
+                )
+            record = KeyCreateResponse.model_validate(_key_store[publicKeyMultibase])
+            del _key_store[publicKeyMultibase]
+            _pre_rotation_key_index.pop(record.preRotationKey, None)
 
 
 def _register_random_ml_dsa_key() -> KeyCreateResponse:
@@ -1049,6 +1071,32 @@ def alias_get(alias: AliasPathSegment) -> StreamingResponse:
     )
 
 
+if not _key_management_enabled():
+
+    @app.api_route(
+        "/keys",
+        methods=["GET", "POST", "PUT", "DELETE", "HEAD"],
+        include_in_schema=False,
+    )
+    def _keys_http_disabled_root() -> None:
+        """Reserve ``/keys`` so it is not captured by ``GET /{scid}`` (short segment ``keys``)."""
+        raise HTTPException(
+            status_code=404,
+            detail="Key management HTTP API is disabled; set KEY_MANAGEMENT=true (or 1/yes/on) to enable /keys.",
+        )
+
+    @app.api_route(
+        "/keys/{publicKeyMultibase:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "HEAD"],
+        include_in_schema=False,
+    )
+    def _keys_http_disabled_subpath(publicKeyMultibase: str) -> None:
+        raise HTTPException(
+            status_code=404,
+            detail="Key management HTTP API is disabled; set KEY_MANAGEMENT=true (or 1/yes/on) to enable /keys.",
+        )
+
+
 @app.get(
     "/{scid}",
     tags=["scids"],
@@ -1058,7 +1106,7 @@ def alias_get(alias: AliasPathSegment) -> StreamingResponse:
         "signed log entries **oldest first** (initial create, then each ``PUT``). "
         "Path accepts a bare base58 **SCID** (e.g. ``QmWty8to1v573wR3ZSj88FScJFY6JaVijGuJAA8UugrhoX``) or a full "
         "``did:pqvh:<SCID>`` single segment (see OpenAPI `pattern`). "
-        "Registered after all other routes so paths like `/health`, `/keys`, `/resolve`, `/alias/…`, "
+        "Registered after all other routes so paths like `/health`, optional `/keys`, `/resolve`, `/alias/…`, "
         "and `/credentials` are not captured."
     ),
     responses={

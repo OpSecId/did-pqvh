@@ -21,12 +21,11 @@ instead of:
 
 ## Current prototype choices
 
-- OpenAPI: operations are grouped under tags **`server`** (e.g. health), **`keys`**, **`scids`** (root SCID log CRUD), **`aliases`** (`/alias/{alias}`), **`dids`** (`GET /resolve`), **`credentials`**. **`GET /`** (not in OpenAPI) serves the **myscid.com** HTML landing page.
+- OpenAPI: operations are grouped under tags **`server`** (e.g. health), optional **`keys`** (only when env **`KEY_MANAGEMENT`** is truthy), **`scids`** (root SCID log CRUD), **`aliases`** (`/alias/{alias}`), **`dids`** (`GET /resolve`), **`credentials`**. **`GET /`** (not in OpenAPI) serves the **myscid.com** HTML landing page.
 - Library: `dilithium-py` (`ML_DSA_44` — ML-DSA-44 parameter set)
 - Signature in `proofValue`: multibase **base64url** (`u` prefix) without padding
 - API endpoints:
-  - `POST /keys` -> create key resource (seed material; store keyed by ``publicKeyMultibase``)
-  - `GET /keys/{publicKeyMultibase}` / `PUT` / `DELETE` -> read, update (may move to new multibase), delete
+  - `POST /keys` / `GET/PUT/DELETE /keys/{publicKeyMultibase}` -> only when **`KEY_MANAGEMENT`** is truthy; otherwise routes are not registered (internal key store still used for server-generated SCID signing keys)
   - `POST /` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); JSON body includes `logEntry`, **`access_token`**, and **`token_type`: `Bearer`** (opaque per-DID write credential)
   - `GET /{scid}` -> **NDJSON** stream (`application/x-ndjson`): one JSON signed log entry per line, oldest first (append-only history: create then each `PUT`); no bearer required
   - `PUT /{scid}` / `DELETE /{scid}` -> append updated signed entry, or delete entire log; both require **`Authorization: Bearer <access_token>`** matching create’s `access_token` (**403** if missing or invalid). Path accepts bare base58 SCID or full `did:pqvh:<SCID>`; registered last so `/health`, `/keys`, `/resolve`, `/alias/…`, `/credentials` win. Use TLS; avoid logging `Authorization` at proxies.
