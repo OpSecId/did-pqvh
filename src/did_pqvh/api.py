@@ -51,7 +51,7 @@ _key_store: dict[str, dict[str, Any]] = {}
 
 # Minimal DID document (https://www.w3.org/TR/did-1.1/) for default `state`.
 MINIMAL_DID_DOCUMENT: dict[str, Any] = {
-    "@context": ["https://www.w3.org/ns/did/v1.1"],
+    "@context": ["https://www.w3.org/ns/did/v1"],
     "id": "did:pqvh:{SCID}",
 }
 
@@ -128,7 +128,7 @@ class AliasDidState(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     context: list[str] | str | None = Field(
-        default_factory=lambda: ["https://www.w3.org/ns/did/v1.1"],
+        default_factory=lambda: ["https://www.w3.org/ns/did/v1"],
         alias="@context",
         description="JSON-LD `@context` (string or array of strings).",
     )
@@ -392,7 +392,7 @@ class CreateRequest(BaseModel):
             "title": "Alias create / update",
             "example": {
                 "state": {
-                    "@context": ["https://www.w3.org/ns/did/v1.1"],
+                    "@context": ["https://www.w3.org/ns/did/v1"],
                     "id": "did:pqvh:{SCID}",
                 },
                 "parameters": {

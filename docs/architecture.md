@@ -13,7 +13,7 @@ instead of:
 
 1. Build history entry JSON (without signature object).
    - Include top-level `parameters` block mirroring WebVH method parameters.
-   - Include `state` as a DID Document (minimal: `@context` first entry `https://www.w3.org/ns/did/v1.1` + `id`). On create, `state.id` may use `{SCID}` placeholder and the server finalizes it.
+   - Include `state` as a DID Document (minimal: `@context` first entry `https://www.w3.org/ns/did/v1` + `id`). On create, `state.id` may use `{SCID}` placeholder and the server finalizes it.
 2. Build a Data Integrity proof per [[di-quantum-safe]] **Create Proof (ML-DSA)** (§3.3.1): proof configuration (JCS), transformation (JCS of the unsecured entry), then **SHA-256** hashing to **hashData** (config hash ‖ document hash).
 3. Sign **hashData** with ML-DSA-44 using the library’s **`sign_external_mu`** path (64-byte μ).
 4. Set `proof.proofValue` to **multibase `u` + base64url** (no pad) of the signature octets.
@@ -53,7 +53,7 @@ instead of:
   "versionId": "1-Qm...",
   "versionTime": "2026-04-27T00:00:00Z",
   "state": {
-    "@context": ["https://www.w3.org/ns/did/v1.1"],
+    "@context": ["https://www.w3.org/ns/did/v1"],
     "id": "did:pqvh:Qm..."
   },
   "parameters": {

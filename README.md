@@ -118,12 +118,12 @@ PUB="$(curl -s -X POST "http://127.0.0.1:8000/keys" -H "content-type: applicatio
   -d '{"seed": "00000000000000000000000000000000"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['publicKeyMultibase'])")"
 curl -s -X POST "http://127.0.0.1:8000/" \
   -H "content-type: application/json" \
-  -d "$(PUB="$PUB" python3 -c 'import hashlib,json,os,base58; pub=os.environ["PUB"]; digest=hashlib.sha256(pub.encode("utf-8")).digest(); pre_rot=base58.b58encode(b"\x12\x20"+digest).decode("ascii"); print(json.dumps({"state":{"@context":["https://www.w3.org/ns/did/v1.1"],"id":"did:pqvh:{SCID}"},"parameters":{"preRotationKeys":[pre_rot],"witness":{"threshold":0,"witnesses":[]},"watchers":[]},"options":{}}))')"
+  -d "$(PUB="$PUB" python3 -c 'import hashlib,json,os,base58; pub=os.environ["PUB"]; digest=hashlib.sha256(pub.encode("utf-8")).digest(); pre_rot=base58.b58encode(b"\x12\x20"+digest).decode("ascii"); print(json.dumps({"state":{"@context":["https://www.w3.org/ns/did/v1"],"id":"did:pqvh:{SCID}"},"parameters":{"preRotationKeys":[pre_rot],"witness":{"threshold":0,"witnesses":[]},"watchers":[]},"options":{}}))')"
 ```
 
 ```bash
 SCID="$(curl -s -X POST "http://127.0.0.1:8000/" -H "content-type: application/json" \
-  -d "$(PUB="$PUB" python3 -c 'import hashlib,json,os,base58; pub=os.environ["PUB"]; digest=hashlib.sha256(pub.encode("utf-8")).digest(); pre_rot=base58.b58encode(b"\x12\x20"+digest).decode("ascii"); print(json.dumps({"state":{"@context":["https://www.w3.org/ns/did/v1.1"],"id":"did:pqvh:{SCID}"},"parameters":{"preRotationKeys":[pre_rot],"witness":{"threshold":0,"witnesses":[]},"watchers":[]},"options":{}}))')" | python3 -c "import sys,json,urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)['logEntry']['state']['id'], safe=''))")"
+  -d "$(PUB="$PUB" python3 -c 'import hashlib,json,os,base58; pub=os.environ["PUB"]; digest=hashlib.sha256(pub.encode("utf-8")).digest(); pre_rot=base58.b58encode(b"\x12\x20"+digest).decode("ascii"); print(json.dumps({"state":{"@context":["https://www.w3.org/ns/did/v1"],"id":"did:pqvh:{SCID}"},"parameters":{"preRotationKeys":[pre_rot],"witness":{"threshold":0,"witnesses":[]},"watchers":[]},"options":{}}))')" | python3 -c "import sys,json,urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)['logEntry']['state']['id'], safe=''))")"
 curl -s "http://127.0.0.1:8000/${SCID}"
 ```
 
