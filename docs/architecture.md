@@ -27,9 +27,9 @@ instead of:
 - API endpoints:
   - `POST /keys` -> create key resource (seed material; store keyed by ``publicKeyMultibase``)
   - `GET /keys/{publicKeyMultibase}` / `PUT` / `DELETE` -> read, update (may move to new multibase), delete
-  - `POST /` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); response body is `{ "logEntry": ... }` and response header **`X-Scid-Auth-Secret`** holds a per-DID shared secret for subsequent writes
-  - `GET /{scid}` -> **NDJSON** stream (`application/x-ndjson`): one JSON signed log entry per line, oldest first (append-only history: create then each `PUT`); no write secret required
-  - `PUT /{scid}` / `DELETE /{scid}` -> append updated signed entry, or delete entire log; both require request header **`X-Scid-Auth-Secret`** equal to the value from create (**403** if missing or invalid). Path accepts bare base58 SCID or full `did:pqvh:<SCID>`; registered last so `/health`, `/keys`, `/resolve`, `/credentials` win. Treat the secret like a bearer: use TLS, and avoid logging that header at proxies.
+  - `POST /` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); JSON body includes `logEntry`, **`access_token`**, and **`token_type`: `Bearer`** (opaque per-DID write credential)
+  - `GET /{scid}` -> **NDJSON** stream (`application/x-ndjson`): one JSON signed log entry per line, oldest first (append-only history: create then each `PUT`); no bearer required
+  - `PUT /{scid}` / `DELETE /{scid}` -> append updated signed entry, or delete entire log; both require **`Authorization: Bearer <access_token>`** matching create’s `access_token` (**403** if missing or invalid). Path accepts bare base58 SCID or full `did:pqvh:<SCID>`; registered last so `/health`, `/keys`, `/resolve`, `/credentials` win. Use TLS; avoid logging `Authorization` at proxies.
   - `GET /resolve?did={did}` -> JSON `{ "didDocument": <latest log entry state> }` (full `did:pqvh:…` or bare SCID); use `GET /{scid}` for the full NDJSON log
   - `POST /credentials/issue` -> minimal W3C VC (`@context`, `type`, `issuer`, `issuanceDate`, `credentialSubject`) + `mldsa44-jcs-2024` proof
   - `POST /credentials/verify` -> verify secured VC + public key; returns unsecured credential when valid
