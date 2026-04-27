@@ -23,6 +23,7 @@ from .canonical import canonicalize_json
 from .suite import KeyPair, make_proof, verify_payload, verify_proof_mldsa44_jcs
 from .suite import generate_keypair as generate_ml_dsa_keypair
 from .suite import generate_keypair_from_seed
+from . import wallet_askar
 
 
 def _key_management_enabled() -> bool:
@@ -769,6 +770,14 @@ def _register_random_ml_dsa_key() -> KeyCreateResponse:
 def _scid_log_snapshot(key: str) -> list[dict[str, Any]] | None:
     """Copy current log lines for ``key`` (full ``did:pqvh:…``), or ``None`` if unknown."""
     with _scid_log_lock:
+        if wallet_askar.wallet_dir() is not None:
+            scid = _pqvh_scid_from_did_key(key)
+            if not scid:
+                return None
+            rows, _ = wallet_askar.read_wallet_sync(scid)
+            if not rows:
+                return None
+            return [dict(r) for r in rows]
         rows = _scid_log.get(key)
         if not rows:
             return None
@@ -804,21 +813,6 @@ def _bearer_token_from_authorization(authorization: str | None) -> str | None:
     return token or None
 
 
-def _require_scid_bearer_token(normalized: str, token: str | None) -> None:
-    """Raise 403 if the per-DID bearer is missing or wrong (call under ``_scid_log_lock``)."""
-    if not token:
-        raise HTTPException(
-            status_code=403,
-            detail="Missing bearer token; send `Authorization: Bearer <access_token>` using `access_token` from `POST /`.",
-        )
-    expected = _scid_secret.get(normalized)
-    if expected is None or not secrets.compare_digest(token, expected):
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid or missing bearer token; use `access_token` from the `POST /` response.",
-        )
-
-
 def _drop_aliases_for_did_locked(normalized_did: str) -> None:
     """Remove every alias pointing at ``normalized_did`` (call under ``_scid_log_lock``)."""
     stale = [a for a, did in _alias_to_did.items() if did == normalized_did]
@@ -838,6 +832,32 @@ def _pqvh_scid_from_did_key(did_key: str) -> str | None:
         return None
     rest = did_key[len(prefix) :]
     return rest if rest else None
+
+
+def _access_token_for_did_locked(normalized: str) -> str | None:
+    """Return stored bearer for ``normalized`` DID (call under ``_scid_log_lock``)."""
+    if wallet_askar.wallet_dir() is not None:
+        scid = _pqvh_scid_from_did_key(normalized)
+        if not scid:
+            return None
+        _, tok = wallet_askar.read_wallet_sync(scid)
+        return tok
+    return _scid_secret.get(normalized)
+
+
+def _require_scid_bearer_token(normalized: str, token: str | None) -> None:
+    """Raise 403 if the per-DID bearer is missing or wrong (call under ``_scid_log_lock``)."""
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail="Missing bearer token; send `Authorization: Bearer <access_token>` using `access_token` from `POST /`.",
+        )
+    expected = _access_token_for_did_locked(normalized)
+    if expected is None or not secrets.compare_digest(token, expected):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid or missing bearer token; use `access_token` from the `POST /` response.",
+        )
 
 
 def _webvh_also_known_as_for_aliases(did_key: str) -> list[str]:
@@ -1026,13 +1046,29 @@ def root_post_did(
         raise HTTPException(status_code=500, detail="Resolved state.id is missing after create.")
     auth_secret = secrets.token_urlsafe(32)
     with _scid_log_lock:
-        if did in _scid_log:
-            raise HTTPException(
-                status_code=409,
-                detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
+        if wallet_askar.wallet_dir() is not None:
+            scid = _pqvh_scid_from_did_key(did)
+            if not scid:
+                raise HTTPException(status_code=500, detail="Resolved state.id is not a did:pqvh DID.")
+            if wallet_askar.wallet_sqlite_path(scid).is_file():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
+                )
+            wallet_askar.write_wallet_sync(
+                scid,
+                [record.model_dump()],
+                auth_secret,
+                provision=True,
             )
-        _scid_log[did] = [record.model_dump()]
-        _scid_secret[did] = auth_secret
+        else:
+            if did in _scid_log:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
+                )
+            _scid_log[did] = [record.model_dump()]
+            _scid_secret[did] = auth_secret
 
     return CreateDidResponse(logEntry=record, access_token=auth_secret, token_type="Bearer")
 
@@ -1156,9 +1192,17 @@ def root_put_did(
         )
     bearer = _bearer_token_from_authorization(authorization)
     with _scid_log_lock:
-        rows = _scid_log.get(normalized)
-        if not rows:
-            raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+        if wallet_askar.wallet_dir() is not None:
+            scid = _pqvh_scid_from_did_key(normalized)
+            if not scid:
+                raise HTTPException(status_code=400, detail="Path must resolve to a did:pqvh DID.")
+            rows, _ = wallet_askar.read_wallet_sync(scid)
+            if not rows:
+                raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+        else:
+            rows = _scid_log.get(normalized)
+            if not rows:
+                raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
         _require_scid_bearer_token(normalized, bearer)
     previous = CreateResponse.model_validate(rows[-1])
     keypair = _keypair_for_put(previous)
@@ -1170,9 +1214,19 @@ def root_put_did(
         version_number=_next_version_number(previous),
     )
     with _scid_log_lock:
-        if normalized not in _scid_log:
-            raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
-        _scid_log[normalized].append(record.model_dump())
+        if wallet_askar.wallet_dir() is not None:
+            scid = _pqvh_scid_from_did_key(normalized)
+            if not scid:
+                raise HTTPException(status_code=400, detail="Path must resolve to a did:pqvh DID.")
+            rows, tok = wallet_askar.read_wallet_sync(scid)
+            if not rows:
+                raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+            rows.append(record.model_dump())
+            wallet_askar.write_wallet_sync(scid, rows, tok, provision=False)
+        else:
+            if normalized not in _scid_log:
+                raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+            _scid_log[normalized].append(record.model_dump())
     return record
 
 
@@ -1185,9 +1239,19 @@ def root_delete_did(
     normalized = _normalize_root_scid_lookup_key(scid)
     bearer = _bearer_token_from_authorization(authorization)
     with _scid_log_lock:
-        if normalized not in _scid_log:
-            raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
-        _require_scid_bearer_token(normalized, bearer)
-        del _scid_log[normalized]
-        _scid_secret.pop(normalized, None)
+        if wallet_askar.wallet_dir() is not None:
+            scid = _pqvh_scid_from_did_key(normalized)
+            if not scid:
+                raise HTTPException(status_code=400, detail="Path must resolve to a did:pqvh DID.")
+            rows, _ = wallet_askar.read_wallet_sync(scid)
+            if not rows:
+                raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+            _require_scid_bearer_token(normalized, bearer)
+            wallet_askar.remove_wallet_sync(scid)
+        else:
+            if normalized not in _scid_log:
+                raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+            _require_scid_bearer_token(normalized, bearer)
+            del _scid_log[normalized]
+            _scid_secret.pop(normalized, None)
         _drop_aliases_for_did_locked(normalized)

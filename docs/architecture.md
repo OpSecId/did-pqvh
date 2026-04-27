@@ -22,7 +22,7 @@ instead of:
 ## Current prototype choices
 
 - OpenAPI: operations are grouped under tags **`server`** (e.g. health), optional **`keys`** (only when env **`KEY_MANAGEMENT`** is truthy), **`scids`** (root SCID log CRUD), **`aliases`** (`/alias/{alias}`), **`dids`** (`GET /resolve`), **`credentials`**. **`GET /`** (not in OpenAPI) serves the **myscid.com** HTML landing page.
-- Library: `dilithium-py` (`ML_DSA_44` — ML-DSA-44 parameter set)
+- Library: `dilithium-py` (`ML_DSA_44` — ML-DSA-44 parameter set); optional **`aries-askar`** per-SCID SQLite when **`DID_PQVH_WALLET_DIR`** + **`DID_PQVH_ASKAR_PASS_KEY`** are set (`{DIR}/{SCID}.sqlite`)
 - Signature in `proofValue`: multibase **base64url** (`u` prefix) without padding
 - API endpoints:
   - `POST /keys` / `GET/PUT/DELETE /keys/{publicKeyMultibase}` -> only when **`KEY_MANAGEMENT`** is truthy; otherwise routes are not registered (internal key store still used for server-generated SCID signing keys)

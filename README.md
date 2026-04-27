@@ -60,6 +60,8 @@ uv run uvicorn did_pqvh.api:app --reload
 | Variable | Effect |
 | -------- | ------ |
 | `KEY_MANAGEMENT` | Default **off**. Set to **`true`**, **`1`**, **`yes`**, or **`on`** (case-insensitive) to register the **`/keys`** REST API and show the **keys** group in OpenAPI. When off, **`/keys`** responds with **404** (reserved so paths are not mistaken for `GET /{scid}`); key material is still used internally for server-generated signing keys on **`POST /`**. |
+| `DID_PQVH_WALLET_DIR` | If set (e.g. **`/wallets`**), each **`did:pqvh`** SCID is stored in **Aries Askar** SQLite at **`{DIR}/{SCID}.sqlite`** (one encrypted DB per SCID). Requires **`DID_PQVH_ASKAR_PASS_KEY`**. When unset, SCID logs and bearer tokens stay in-memory only. |
+| `DID_PQVH_ASKAR_PASS_KEY` | Raw Askar store key (generate once, e.g. `uv run python -c 'from aries_askar import Store; print(Store.generate_raw_key())'`). Required whenever **`DID_PQVH_WALLET_DIR`** is set; keep stable across restarts or wallets cannot be reopened. |
 | `DID_PQVH_WEBVH_HOSTNAME` | If non-empty, `GET /resolve` augments `didDocument.alsoKnownAs` with `did:webvh:{SCID}:{hostname}:alias:{alias}` for each alias registered for that DID in the server map (`{SCID}` is the `did:pqvh:` method-specific id; `{hostname}` is this value). This build does not expose HTTP APIs to add aliases. Omitted or empty disables that merge. |
 
 **Key management HTTP API** (`KEY_MANAGEMENT=true`): keys are a REST resource (prototype **in-memory** store; restart clears it). The path parameter is **`publicKeyMultibase`** (multibase `z` + base58btc of the raw ML-DSA public key from the create response). Use that string as `/keys/{publicKeyMultibase}` (encode for HTTP if your client requires it).

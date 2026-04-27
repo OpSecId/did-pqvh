@@ -34,6 +34,17 @@ wheels = [
 ]
 
 [[package]]
+name = "aries-askar"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/44/7c2ba973e3bea7411708c4177db970665e7fb1eca702293cc3bbdf58ac52/aries_askar-0.5.0-py3-none-macosx_10_9_universal2.whl", hash = "sha256:03da20836bbc9cd4d6ad7c272d52caa7a9089fc754da58f849bfe4a81a0d27be", size = 7582268, upload-time = "2025-12-11T19:18:52.496Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/97/f621b4133d59ccc72321696815c1e627b23d8a484553ced7c534804fface/aries_askar-0.5.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:be5bc1c89d9633ec1d9e20222f97f4c78a345f675f825529bdc28103be29f6ba", size = 3941813, upload-time = "2025-12-11T19:18:54.609Z" },
+    { url = "https://files.pythonhosted.org/packages/11/b8/d7e8ea1cc6619e8731c941080cc22f3e55ae3b355c8c3134b9c1eb11ff46/aries_askar-0.5.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:ee736b24acf724b866bb1bd8b64b075806b39cf6a7ab35b668f12fbf7ffda077", size = 4190317, upload-time = "2025-12-11T19:18:56.275Z" },
+    { url = "https://files.pythonhosted.org/packages/47/68/5a94408f01031c3c12b57a04a0e0e5dee4407b436adcdb47b4c4a2d5dbd4/aries_askar-0.5.0-py3-none-win_amd64.whl", hash = "sha256:1301e330c0dfb0fc81335a98e167671630d2eb47f536d8dc52b15ea738c973aa", size = 3585425, upload-time = "2025-12-11T19:18:58.929Z" },
+]
+
+[[package]]
 name = "base58"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -68,6 +79,7 @@ name = "did-pqvh"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aries-askar" },
     { name = "base58" },
     { name = "dilithium-py" },
     { name = "fastapi" },
@@ -76,6 +88,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aries-askar", specifier = ">=0.5.0" },
     { name = "base58", specifier = ">=2.1.1" },
     { name = "dilithium-py" },
     { name = "fastapi" },

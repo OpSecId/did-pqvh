@@ -7,6 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # ENV DID_PQVH_WEBVH_HOSTNAME=wallets.example.com
 # Optional: expose /keys CRUD in OpenAPI (default off).
 # ENV KEY_MANAGEMENT=true
+# Optional: Askar SQLite per SCID (see README); mount a volume on DID_PQVH_WALLET_DIR.
+# ENV DID_PQVH_WALLET_DIR=/wallets
+# ENV DID_PQVH_ASKAR_PASS_KEY=<raw key from Store.generate_raw_key()>
 
 WORKDIR /app
 
