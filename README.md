@@ -99,7 +99,7 @@ Response keys (key resources):
 
 - **`POST /dids`** — create (201); fails with **409** if that `state.id` already exists. Body must include **`options.apiKey`**. Signing key is selected by checking `parameters.preRotationKeys` in order and using the first hash that matches a key created via **`POST /keys`**. Response body wraps the DID log entry as **`{ "logEntry": { ... } }`**.
 - **`GET /dids/{scid}`** — read stored signed entry; **`{scid}`** is the DID string (e.g. percent-encode as `did%3Apqvh%3Amyid`).
-- **`GET /{scid}`** — same as above (root path alias); registered after reserved paths (`/health`, `/keys`, `/resolve`, etc.).
+- **`GET /{scid}`** — same as above (root path alias); `scid` must match `did:pqvh:` + base58 method-specific id (43–48 chars) or FastAPI returns **422**; registered after reserved paths (`/health`, `/keys`, `/resolve`, etc.).
 - **`PUT /dids/{scid}`** — update document/parameters and re-sign; body `state.id` must match the path. Body must include **`options.apiKey`**.
 - **`DELETE /dids/{scid}?apiKey={apiKey}`** — remove (204); requires the same API key.
 - **`GET /resolve?did={did}`** — resolve by full DID (local store lookup in this prototype).

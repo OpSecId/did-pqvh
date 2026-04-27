@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Self
 
 import base58
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .canonical import canonicalize_json
@@ -50,6 +50,10 @@ MINIMAL_DID_DOCUMENT: dict[str, Any] = {
     "@context": ["https://www.w3.org/ns/did/v1.1"],
     "id": "did:pqvh:{SCID}",
 }
+
+# ``GET /{scid}`` only: full ``did:pqvh`` DID whose method-specific id is base58btc (SHA-256 multihash
+# from ``_entry_hash`` is always 46 chars; allow a small range for future hash widths).
+SCID_ROOT_DID_PATH_PATTERN = r"^did:pqvh:[1-9A-HJ-NP-Za-km-z]{43,48}$"
 
 
 class WitnessConfig(BaseModel):
@@ -841,16 +845,29 @@ def credentials_verify(req: CredentialVerifyRequest) -> CredentialVerifyResponse
 
 
 @app.get(
-    "/{scid:path}",
+    "/{scid}",
     response_model=CreateResponse,
     tags=["dids"],
     summary="Read DID (root path)",
     description=(
         "Same as `GET /dids/{scid}`: returns the stored signed entry when `scid` is the full DID. "
+        "The path must match `did:pqvh:` plus a base58btc method-specific id (see OpenAPI `pattern`); "
+        "otherwise the request fails validation (422). "
         "Registered after all other routes so paths like `/health`, `/keys`, `/dids`, `/resolve`, "
         "and `/credentials` are not captured."
     ),
 )
-def scid_root_get(scid: str) -> CreateResponse:
+def scid_root_get(
+    scid: Annotated[
+        str,
+        Path(
+            pattern=SCID_ROOT_DID_PATH_PATTERN,
+            description=(
+                "Full DID string, single path segment. Must be `did:pqvh:` followed by a base58btc "
+                "method-specific id (43–48 characters)."
+            ),
+        ),
+    ],
+) -> CreateResponse:
     """Root-path alias for reading a SCID entry (must be registered last)."""
     return _get_scid_entry_or_404(scid)
