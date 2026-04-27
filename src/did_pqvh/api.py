@@ -431,29 +431,10 @@ class CreateResponse(BaseModel):
     proof: dict[str, Any]
 
 
-class DidBootstrapInfo(BaseModel):
-    """Returned on `POST /` when the server generated a signing key (prototype custody)."""
-
-    publicKeyMultibase: str = Field(
-        ...,
-        description="Server-created signing key: `publicKeyMultibase` (`GET /keys/{...}`).",
-    )
-    secretKeyMultibase: str = Field(
-        ...,
-        description="Server-created signing key: multibase-encoded secret (handle like `POST /keys`).",
-    )
-    preRotationKey: str = Field(
-        ...,
-        description="Hash inserted into `parameters.preRotationKeys` for this create.",
-    )
-
-
 class CreateDidResponse(BaseModel):
+    """Wrapped create response (signed log entry only)."""
+
     logEntry: CreateResponse
-    bootstrap: DidBootstrapInfo | None = Field(
-        default=None,
-        description="Present when the server generated an ML-DSA signing key for this create.",
-    )
 
 
 class CredentialIssueRequest(BaseModel):
@@ -785,7 +766,6 @@ def credentials_verify(req: CredentialVerifyRequest) -> CredentialVerifyResponse
 @app.post(
     "/",
     response_model=CreateDidResponse,
-    response_model_exclude_none=True,
     status_code=201,
     tags=["scids"],
     summary="Create DID",
@@ -795,11 +775,11 @@ def root_post_did(
         CreateRequest,
         Body(
             openapi_examples={
-                "minimal_bootstrap": {
+                "minimal_create": {
                     "summary": "Empty objects (server-generated signing key)",
                     "description": (
                         "Omit signing key material: server registers a new ML-DSA key and "
-                        "fills `parameters.preRotationKeys`. See `bootstrap` in the response."
+                        "fills `parameters.preRotationKeys` (stored like `POST /keys`)."
                     ),
                     "value": {"options": {}, "parameters": {}, "state": {}},
                 },
@@ -810,8 +790,7 @@ def root_post_did(
     """Create a SCID resource: sign DID entry, store under ``state.id`` (prototype in-memory registry).
 
     If ``parameters.preRotationKeys`` is empty, the server generates an ML-DSA key, stores it like
-    ``POST /keys``, and uses its ``preRotationKey`` for signing. Key material is echoed under
-    ``bootstrap`` when the server generated that key.
+    ``POST /keys``, and uses its ``preRotationKey`` for signing.
     """
     key_record: KeyCreateResponse | None = None
     if not req.parameters.preRotationKeys:
@@ -844,15 +823,7 @@ def root_post_did(
             )
         _scid_store[did] = record.model_dump()
 
-    bootstrap: DidBootstrapInfo | None = None
-    if key_record is not None:
-        bootstrap = DidBootstrapInfo(
-            publicKeyMultibase=key_record.publicKeyMultibase,
-            secretKeyMultibase=key_record.secretKeyMultibase,
-            preRotationKey=key_record.preRotationKey,
-        )
-
-    return CreateDidResponse(logEntry=record, bootstrap=bootstrap)
+    return CreateDidResponse(logEntry=record)
 
 
 @app.get(

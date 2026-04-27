@@ -27,7 +27,7 @@ instead of:
 - API endpoints:
   - `POST /keys` -> create key resource (seed material; store keyed by ``publicKeyMultibase``)
   - `GET /keys/{publicKeyMultibase}` / `PUT` / `DELETE` -> read, update (may move to new multibase), delete
-  - `POST /` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); response is `{ "logEntry": ... }` with optional `bootstrap` when the server generated the signing key
+  - `POST /` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); response is `{ "logEntry": ... }` only
   - `GET /{scid}` / `PUT /{scid}` / `DELETE /{scid}` -> read, update, delete (path accepts bare base58 SCID or full `did:pqvh:<SCID>`; registered last so `/health`, `/keys`, `/resolve`, `/credentials` win)
   - `GET /resolve?did={did}` -> resolve by full `did:pqvh:…` or bare SCID (same normalization)
   - `POST /credentials/issue` -> minimal W3C VC (`@context`, `type`, `issuer`, `issuanceDate`, `credentialSubject`) + `mldsa44-jcs-2024` proof
