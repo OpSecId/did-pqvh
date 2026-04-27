@@ -62,6 +62,18 @@ def _normalize_root_scid_lookup_key(path_segment: str) -> str:
     return f"did:pqvh:{path_segment}"
 
 
+ScidPathSegment = Annotated[
+    str,
+    Path(
+        pattern=SCID_ROOT_PATH_PATTERN,
+        description=(
+            "Bare base58 SCID (32–80 chars) or full `did:pqvh:` + same, one URL path segment "
+            "(encode `:` for HTTP if needed)."
+        ),
+    ),
+]
+
+
 class WitnessConfig(BaseModel):
     """WebVH-style witness block (prototype defaults)."""
 
@@ -119,7 +131,7 @@ class AliasDidState(BaseModel):
         default="did:pqvh:{SCID}",
         min_length=1,
         description=(
-            "DID string; storage key for `GET /dids/{scid}` (URL-encode the path segment). "
+            "DID string; storage key for `GET /{scid}` (URL-encode the path segment). "
             "Defaults to `did:pqvh:{SCID}` so `state: {}` is valid on create."
         ),
     )
@@ -368,7 +380,7 @@ class AliasRequestOptions(BaseModel):
 
 
 class CreateRequest(BaseModel):
-    """Body for `POST /dids` and `PUT /dids/{scid}` (create or update a signed SCID entry)."""
+    """Body for `POST /` (create) and `PUT /{scid}` (update a signed SCID entry)."""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -415,7 +427,7 @@ class CreateResponse(BaseModel):
 
 
 class DidBootstrapInfo(BaseModel):
-    """Returned on `POST /dids` when the server generated a signing key (prototype custody)."""
+    """Returned on `POST /` when the server generated a signing key (prototype custody)."""
 
     publicKeyMultibase: str = Field(
         ...,
@@ -673,79 +685,6 @@ def _register_random_ml_dsa_key() -> KeyCreateResponse:
     )
 
 
-@app.post(
-    "/dids",
-    response_model=CreateDidResponse,
-    response_model_exclude_none=True,
-    status_code=201,
-    tags=["dids"],
-    summary="Create DID",
-)
-def scids_post(
-    req: Annotated[
-        CreateRequest,
-        Body(
-            openapi_examples={
-                "minimal_bootstrap": {
-                    "summary": "Empty objects (server-generated signing key)",
-                    "description": (
-                        "Omit signing key material: server registers a new ML-DSA key and "
-                        "fills `parameters.preRotationKeys`. See `bootstrap` in the response."
-                    ),
-                    "value": {"options": {}, "parameters": {}, "state": {}},
-                },
-            },
-        ),
-    ],
-) -> CreateDidResponse:
-    """Create a SCID resource: sign DID entry, store under ``state.id`` (prototype in-memory registry).
-
-    If ``parameters.preRotationKeys`` is empty, the server generates an ML-DSA key, stores it like
-    ``POST /keys``, and uses its ``preRotationKey`` for signing. Key material is echoed under
-    ``bootstrap`` when the server generated that key.
-    """
-    key_record: KeyCreateResponse | None = None
-    if not req.parameters.preRotationKeys:
-        key_record = _register_random_ml_dsa_key()
-        eff_params = req.parameters.model_copy(update={"preRotationKeys": [key_record.preRotationKey]})
-    else:
-        eff_params = req.parameters
-
-    effective_req = req.model_copy(update={"parameters": eff_params})
-
-    keypair, public_key_multibase = _keypair_from_pre_rotation_keys(
-        effective_req.parameters.preRotationKeys
-    )
-    vm = f"did:key:{public_key_multibase}#{public_key_multibase}"
-    record = _create_did_record(
-        effective_req,
-        keypair=keypair,
-        verification_method=vm,
-        version_number=1,
-        allow_scid_placeholder=True,
-    )
-    did = record.state.get("id")
-    if not isinstance(did, str) or not did:
-        raise HTTPException(status_code=500, detail="Resolved state.id is missing after create.")
-    with _scid_store_lock:
-        if did in _scid_store:
-            raise HTTPException(
-                status_code=409,
-                detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
-            )
-        _scid_store[did] = record.model_dump()
-
-    bootstrap: DidBootstrapInfo | None = None
-    if key_record is not None:
-        bootstrap = DidBootstrapInfo(
-            publicKeyMultibase=key_record.publicKeyMultibase,
-            secretKeyMultibase=key_record.secretKeyMultibase,
-            preRotationKey=key_record.preRotationKey,
-        )
-
-    return CreateDidResponse(logEntry=record, bootstrap=bootstrap)
-
-
 def _get_scid_entry_or_404(scid: str) -> CreateResponse:
     """Load stored signed entry for ``scid`` (full DID string used as map key)."""
     with _scid_store_lock:
@@ -755,79 +694,22 @@ def _get_scid_entry_or_404(scid: str) -> CreateResponse:
     return CreateResponse.model_validate(raw)
 
 
-@app.get("/dids/{scid:path}", response_model=CreateResponse, tags=["dids"], summary="Read DID")
-def scids_get(scid: str) -> CreateResponse:
-    """Read the stored signed entry for path ``scid`` (the DID string; URL-encode, e.g. ``did%3Apqvh%3A…``)."""
-    return _get_scid_entry_or_404(scid)
-
-
-@app.put("/dids/{scid:path}", response_model=CreateResponse, tags=["dids"], summary="Update DID")
-def scids_put(
-    scid: str,
-    req: Annotated[
-        CreateRequest,
-        Body(
-            openapi_examples={
-                "minimal_update": {
-                    "summary": "Minimal update body",
-                    "description": "Use empty `state` and `parameters` objects (path `scid` must match `state.id`).",
-                    "value": {
-                        "state": {},
-                        "parameters": {},
-                    },
-                },
-            },
-        ),
-    ],
-) -> CreateResponse:
-    """Update DID document/parameters: re-signs entry (prototype; no separate auth layer)."""
-    body_id = _did_id_from_state(req.state)
-    if body_id != scid:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Path scid {scid!r} must match body state.id {body_id!r}",
-        )
-    with _scid_store_lock:
-        prev_raw = _scid_store.get(scid)
-    if prev_raw is None:
-        raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
-    previous = CreateResponse.model_validate(prev_raw)
-    keypair = _keypair_for_put(previous)
-    vm = _verification_method_for_scid_put(previous)
-    record = _create_did_record(
-        req,
-        keypair=keypair,
-        verification_method=vm,
-        version_number=_next_version_number(previous),
-    )
-    with _scid_store_lock:
-        if scid not in _scid_store:
-            raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
-        _scid_store[scid] = record.model_dump()
-    return record
-
-
-@app.delete("/dids/{scid:path}", status_code=204, tags=["dids"], summary="Delete DID")
-def scids_delete(scid: str) -> None:
-    """Remove SCID entry from the prototype registry (no auth in this prototype)."""
-    with _scid_store_lock:
-        if scid not in _scid_store:
-            raise HTTPException(status_code=404, detail=f"SCID entry not found: {scid!r}")
-        del _scid_store[scid]
-
-
 @app.get("/resolve", response_model=CreateResponse, tags=["dids"])
 def dids_resolve(
-    did: str = Query(..., description="Resolve by full DID (public-style query)."),
+    did: str = Query(
+        ...,
+        description="Full `did:pqvh:…` or bare base58 SCID (same normalization as `GET /{scid}`).",
+    ),
 ) -> CreateResponse:
-    """Resolve DID record by `did`."""
+    """Resolve DID record by `did` query (local store)."""
+    key = _normalize_root_scid_lookup_key(did)
     with _scid_store_lock:
-        raw = _scid_store.get(did)
+        raw = _scid_store.get(key)
     if raw is None:
         raise HTTPException(
             status_code=404,
             detail=(
-                f"DID not found in local store: {did!r}. "
+                f"DID not found in local store: {key!r}. "
                 "Public network resolution is not implemented in this prototype."
             ),
         )
@@ -895,30 +777,156 @@ def credentials_verify(req: CredentialVerifyRequest) -> CredentialVerifyResponse
     )
 
 
+@app.post(
+    "/",
+    response_model=CreateDidResponse,
+    response_model_exclude_none=True,
+    status_code=201,
+    tags=["dids"],
+    summary="Create DID",
+)
+def root_post_did(
+    req: Annotated[
+        CreateRequest,
+        Body(
+            openapi_examples={
+                "minimal_bootstrap": {
+                    "summary": "Empty objects (server-generated signing key)",
+                    "description": (
+                        "Omit signing key material: server registers a new ML-DSA key and "
+                        "fills `parameters.preRotationKeys`. See `bootstrap` in the response."
+                    ),
+                    "value": {"options": {}, "parameters": {}, "state": {}},
+                },
+            },
+        ),
+    ],
+) -> CreateDidResponse:
+    """Create a SCID resource: sign DID entry, store under ``state.id`` (prototype in-memory registry).
+
+    If ``parameters.preRotationKeys`` is empty, the server generates an ML-DSA key, stores it like
+    ``POST /keys``, and uses its ``preRotationKey`` for signing. Key material is echoed under
+    ``bootstrap`` when the server generated that key.
+    """
+    key_record: KeyCreateResponse | None = None
+    if not req.parameters.preRotationKeys:
+        key_record = _register_random_ml_dsa_key()
+        eff_params = req.parameters.model_copy(update={"preRotationKeys": [key_record.preRotationKey]})
+    else:
+        eff_params = req.parameters
+
+    effective_req = req.model_copy(update={"parameters": eff_params})
+
+    keypair, public_key_multibase = _keypair_from_pre_rotation_keys(
+        effective_req.parameters.preRotationKeys
+    )
+    vm = f"did:key:{public_key_multibase}#{public_key_multibase}"
+    record = _create_did_record(
+        effective_req,
+        keypair=keypair,
+        verification_method=vm,
+        version_number=1,
+        allow_scid_placeholder=True,
+    )
+    did = record.state.get("id")
+    if not isinstance(did, str) or not did:
+        raise HTTPException(status_code=500, detail="Resolved state.id is missing after create.")
+    with _scid_store_lock:
+        if did in _scid_store:
+            raise HTTPException(
+                status_code=409,
+                detail=f"SCID entry already exists for {did!r}. Use PUT to update or DELETE first.",
+            )
+        _scid_store[did] = record.model_dump()
+
+    bootstrap: DidBootstrapInfo | None = None
+    if key_record is not None:
+        bootstrap = DidBootstrapInfo(
+            publicKeyMultibase=key_record.publicKeyMultibase,
+            secretKeyMultibase=key_record.secretKeyMultibase,
+            preRotationKey=key_record.preRotationKey,
+        )
+
+    return CreateDidResponse(logEntry=record, bootstrap=bootstrap)
+
+
 @app.get(
     "/{scid}",
     response_model=CreateResponse,
     tags=["dids"],
-    summary="Read DID (root path)",
+    summary="Read DID",
     description=(
-        "Same as `GET /dids/{scid}` after normalizing the path: accept a bare base58 **SCID** "
+        "Read the stored signed entry. Path accepts a bare base58 **SCID** "
         "(e.g. ``QmWty8to1v573wR3ZSj88FScJFY6JaVijGuJAA8UugrhoX``) or a full ``did:pqvh:<SCID>`` "
         "single segment (see OpenAPI `pattern`). "
-        "Registered after all other routes so paths like `/health`, `/keys`, `/dids`, `/resolve`, "
+        "Registered after all other routes so paths like `/health`, `/keys`, `/resolve`, "
         "and `/credentials` are not captured."
     ),
 )
-def scid_root_get(
-    scid: Annotated[
-        str,
-        Path(
-            pattern=SCID_ROOT_PATH_PATTERN,
-            description=(
-                "Bare base58 SCID (32–80 chars) or full `did:pqvh:` + same, one URL path segment "
-                "(encode `:` for HTTP if needed)."
-            ),
+def root_get_did(scid: ScidPathSegment) -> CreateResponse:
+    """Read a SCID entry (registered after static paths)."""
+    return _get_scid_entry_or_404(_normalize_root_scid_lookup_key(scid))
+
+
+@app.put(
+    "/{scid}",
+    response_model=CreateResponse,
+    tags=["dids"],
+    summary="Update DID",
+)
+def root_put_did(
+    scid: ScidPathSegment,
+    req: Annotated[
+        CreateRequest,
+        Body(
+            openapi_examples={
+                "minimal_update": {
+                    "summary": "Minimal update body",
+                    "description": (
+                        "Path accepts bare SCID or full `did:pqvh:…`; `state.id` must match the resolved DID."
+                    ),
+                    "value": {
+                        "state": {},
+                        "parameters": {},
+                    },
+                },
+            },
         ),
     ],
 ) -> CreateResponse:
-    """Root-path alias for reading a SCID entry (must be registered last)."""
-    return _get_scid_entry_or_404(_normalize_root_scid_lookup_key(scid))
+    """Update DID document/parameters: re-signs entry (prototype; no separate auth layer)."""
+    normalized = _normalize_root_scid_lookup_key(scid)
+    body_id = _did_id_from_state(req.state)
+    if body_id != normalized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path scid resolved to {normalized!r}; must match body state.id {body_id!r}",
+        )
+    with _scid_store_lock:
+        prev_raw = _scid_store.get(normalized)
+    if prev_raw is None:
+        raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+    previous = CreateResponse.model_validate(prev_raw)
+    keypair = _keypair_for_put(previous)
+    vm = _verification_method_for_scid_put(previous)
+    record = _create_did_record(
+        req,
+        keypair=keypair,
+        verification_method=vm,
+        version_number=_next_version_number(previous),
+    )
+    with _scid_store_lock:
+        if normalized not in _scid_store:
+            raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+        _scid_store[normalized] = record.model_dump()
+    return record
+
+
+@app.delete("/{scid}", status_code=204, tags=["dids"], summary="Delete DID")
+def root_delete_did(scid: ScidPathSegment) -> None:
+    """Remove SCID entry from the prototype registry (no auth in this prototype)."""
+    normalized = _normalize_root_scid_lookup_key(scid)
+    with _scid_store_lock:
+        if normalized not in _scid_store:
+            raise HTTPException(status_code=404, detail=f"SCID entry not found: {normalized!r}")
+        del _scid_store[normalized]
