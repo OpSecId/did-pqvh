@@ -47,14 +47,8 @@ def _openapi_tags() -> list[dict[str, str]]:
             {
                 "name": "scids",
                 "description": (
-                    "SCID log resources at the API root: `POST /` appends the first signed entry and returns "
-                    "`access_token` + `token_type: Bearer` (store for writes); "
-                    "`GET /{scid}` streams **NDJSON** (one JSON log entry per line, oldest first); "
-                    "`PUT /{scid}` / `DELETE /{scid}` require `Authorization: Bearer <access_token>`. "
-                    "Optional **`GET /alias/{alias}`** (see **`aliases`** tag) mirrors **`GET /{scid}`** when an alias is registered. "
-                    "Paths accept bare multihash SCID or full `did:pqvh:…`. Create selects signing keys by sequential "
-                    "lookup of `parameters.preRotationKeys` (empty list triggers a server-generated key in the internal store; "
-                    "set env **`KEY_MANAGEMENT=true`** to expose the `/keys` HTTP API)."
+                    "Root SCID log: create with `POST /`, read NDJSON with `GET /{scid}`, update/delete with Bearer token. "
+                    "See **`aliases`** for `GET /alias/{alias}`; README for `KEY_MANAGEMENT` and key selection."
                 ),
             },
             {
