@@ -99,7 +99,7 @@ Response keys (key resources):
 
 - **`POST /dids`** — create (201); fails with **409** if that `state.id` already exists. Response body is **`{ "logEntry": { ... }, "bootstrap": { ... }? }`**. You may send **`{"options":{},"parameters":{},"state":{}}`**: the server registers a new ML-DSA signing key (same shape as **`POST /keys`**), sets **`parameters.preRotationKeys`** to that key’s **`preRotationKey`**, and defaults **`state`** to a minimal DID document with **`id`: `did:pqvh:{SCID}`**. **`bootstrap`** (when present) returns only the generated signing key fields for custody. If you already use **`POST /keys`**, supply **`preRotationKeys`** as before.
 - **`GET /dids/{scid}`** — read stored signed entry; **`{scid}`** is the DID string (e.g. percent-encode as `did%3Apqvh%3Amyid`).
-- **`GET /{scid}`** — same as above (root path alias); `scid` must match `did:pqvh:` + base58 method-specific id (43–48 chars) or FastAPI returns **422**; registered after reserved paths (`/health`, `/keys`, `/resolve`, etc.).
+- **`GET /{scid}`** — same as above (root path alias); `scid` may be the **bare base58 SCID** (e.g. `QmWty8to1v573wR3ZSj88FScJFY6JaVijGuJAA8UugrhoX`) or the full **`did:pqvh:`** + that string (one path segment; encode for HTTP if needed). Registered after reserved paths (`/health`, `/keys`, `/resolve`, etc.).
 - **`PUT /dids/{scid}`** — update document/parameters and re-sign; body `state.id` must match the path (prototype; no separate auth).
 - **`DELETE /dids/{scid}`** — remove (204); no query parameters (prototype; no separate auth).
 - **`GET /resolve?did={did}`** — resolve by full DID (local store lookup in this prototype).

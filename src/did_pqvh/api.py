@@ -50,9 +50,16 @@ MINIMAL_DID_DOCUMENT: dict[str, Any] = {
     "id": "did:pqvh:{SCID}",
 }
 
-# ``GET /{scid}`` only: full ``did:pqvh`` DID whose method-specific id is base58btc (SHA-256 multihash
-# from ``_entry_hash`` is always 46 chars; allow a small range for future hash widths).
-SCID_ROOT_DID_PATH_PATTERN = r"^did:pqvh:[1-9A-HJ-NP-Za-km-z]{43,48}$"
+# ``GET /{scid}`` only: bare base58 **SCID** (multihash string, e.g. ``QmWty8to1v573wR3ZS…``) **or**
+# full ``did:pqvh:<SCID>``. Lower bound avoids short paths like ``/health`` matching this route.
+SCID_ROOT_PATH_PATTERN = r"^(?:did:pqvh:)?[1-9A-HJ-NP-Za-km-z]{32,80}$"
+
+
+def _normalize_root_scid_lookup_key(path_segment: str) -> str:
+    """Map root path segment to in-memory store key (full ``did:pqvh:…`` DID string)."""
+    if path_segment.startswith("did:pqvh:"):
+        return path_segment
+    return f"did:pqvh:{path_segment}"
 
 
 class WitnessConfig(BaseModel):
@@ -894,9 +901,9 @@ def credentials_verify(req: CredentialVerifyRequest) -> CredentialVerifyResponse
     tags=["dids"],
     summary="Read DID (root path)",
     description=(
-        "Same as `GET /dids/{scid}`: returns the stored signed entry when `scid` is the full DID. "
-        "The path must match `did:pqvh:` plus a base58btc method-specific id (see OpenAPI `pattern`); "
-        "otherwise the request fails validation (422). "
+        "Same as `GET /dids/{scid}` after normalizing the path: accept a bare base58 **SCID** "
+        "(e.g. ``QmWty8to1v573wR3ZSj88FScJFY6JaVijGuJAA8UugrhoX``) or a full ``did:pqvh:<SCID>`` "
+        "single segment (see OpenAPI `pattern`). "
         "Registered after all other routes so paths like `/health`, `/keys`, `/dids`, `/resolve`, "
         "and `/credentials` are not captured."
     ),
@@ -905,13 +912,13 @@ def scid_root_get(
     scid: Annotated[
         str,
         Path(
-            pattern=SCID_ROOT_DID_PATH_PATTERN,
+            pattern=SCID_ROOT_PATH_PATTERN,
             description=(
-                "Full DID string, single path segment. Must be `did:pqvh:` followed by a base58btc "
-                "method-specific id (43–48 characters)."
+                "Bare base58 SCID (32–80 chars) or full `did:pqvh:` + same, one URL path segment "
+                "(encode `:` for HTTP if needed)."
             ),
         ),
     ],
 ) -> CreateResponse:
     """Root-path alias for reading a SCID entry (must be registered last)."""
-    return _get_scid_entry_or_404(scid)
+    return _get_scid_entry_or_404(_normalize_root_scid_lookup_key(scid))

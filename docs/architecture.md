@@ -28,7 +28,7 @@ instead of:
   - `POST /keys` -> create key resource (seed material; store keyed by ``publicKeyMultibase``)
   - `GET /keys/{publicKeyMultibase}` / `PUT` / `DELETE` -> read, update (may move to new multibase), delete
   - `POST /dids` -> create SCID resource; signing key is the first matching hash in `parameters.preRotationKeys` (or server-generated key when that list is empty, stored like `POST /keys`); response is `{ "logEntry": ... }` with optional `bootstrap` when the server generated the signing key
-  - `GET /dids/{scid}` / `GET /{scid}` (same read; root route registered last; `scid` regex-validated as `did:pqvh:` + base58 id) / `PUT /dids/{scid}` / `DELETE /dids/{scid}` -> read, update, delete (prototype; no API-key layer on write/delete)
+  - `GET /dids/{scid}` / `GET /{scid}` (same read; root route registered last; root path accepts bare base58 SCID or full `did:pqvh:<SCID>`) / `PUT /dids/{scid}` / `DELETE /dids/{scid}` -> read, update, delete (prototype; no API-key layer on write/delete)
   - `GET /resolve?did={did}` -> resolve by full DID
   - `POST /credentials/issue` -> minimal W3C VC (`@context`, `type`, `issuer`, `issuanceDate`, `credentialSubject`) + `mldsa44-jcs-2024` proof
   - `POST /credentials/verify` -> verify secured VC + public key; returns unsecured credential when valid
